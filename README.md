@@ -38,6 +38,7 @@ Project_2/
     │   └── product_ids_50.txt        # Tập ID mẫu 50 sản phẩm
     └── output/
         ├── concurrency/              # Kết quả xuất ra từ fetch_tiki_products.py
+        │   ├── parts/                # Các file batch (1,000 items/file)
         │   ├── products_output.json               # Dữ liệu JSON hoàn chỉnh (Atomic Write)
         │   ├── products_output.jsonl              # Stream ghi từng dòng (Durable Append)
         │   ├── products_output.progress.txt       # Danh sách ID đã cào thành công
@@ -55,6 +56,8 @@ Hệ thống cung cấp **3 chế độ thực thi** phù hợp với từng nhu
 
 ### 1. Concurrency Engine (`fetch_tiki_products.py`) - Khuyến nghị cho Production
 - **Lập trình bất đồng bộ (`asyncio` + `aiohttp`)**: Quản lý connection pool với keep-alive, pacing request ngẫu nhiên tự nhiên (`NaturalPacer`).
+- **Worker Pool có gắn nhãn**: Log mỗi request đều hiển thị `[Worker N]` để theo dõi worker nào đang xử lý ID nào. Hỗ trợ từ **1 đến 10 workers** đồng thời (mặc định: 10).
+- **Cung cấp public API `run_product_ids()`**: Cho phép các module khác (như `main.py`) gọi trực tiếp engine với danh sách ID tùy chỉnh, tái sử dụng toàn bộ logic retry/checkpoint.
 - **Cơ chế Checkpoint đa lớp**:
   - `products_output.jsonl`: Append từng bản ghi và `fsync` ngay lập tức chống mất dữ liệu khi crash/tắt đột ngột.
   - `products_output.progress.txt`: Tập hợp ID đã thành công giúp Resume tức thì mà không cần duyệt lại JSON lớn.
@@ -63,9 +66,11 @@ Hệ thống cung cấp **3 chế độ thực thi** phù hợp với từng nhu
   - `products_output.failed_permanent.json`: Tách riêng các ID không thể cào (404, payload sai định dạng, đã hết lượt retry).
   - `products_output.stats.json`: Ghi nhận và tích lũy tổng thời gian cào qua nhiều lần chạy, tính tốc độ trung bình.
 
-### 2. Batch Streaming Engine (`main.py` + `crawler.py`)
-- **Tự động chia file theo Batch**: Cứ mỗi 1,000 sản phẩm cào thành công sẽ tự động đóng gói thành một file độc lập (`tiki_products_part_0001.json`, `tiki_products_part_0002.json`, ...).
-- **Tiết kiệm bộ nhớ**: Giữ mức RAM sử dụng luôn dưới **80MB** ngay cả khi cào hàng trăm nghìn sản phẩm.
+### 2. Batch Streaming Engine (`main.py`)
+- **Refactored**: `main.py` giờ dùng trực tiếp `run_product_ids()` từ `fetch_tiki_products.py` thay vì `TikiAsyncCrawler` cũ — tái sử dụng toàn bộ cơ chế retry/checkpoint/cooldown.
+- **Tự động chia file theo Batch**: Cứ mỗi `--batch-size` (mặc định 1,000) sản phẩm sẽ đóng gói thành một file riêng (`products_part_0001.json`, `products_part_0002.json`, ...) trong thư mục `data/output/concurrency/parts/`.
+- **Log trạng thái chi tiết từng batch**: Trước và sau mỗi batch đều in ra số lượng `success`, `permanent_failed`, `due`, `pending_retry` và `cooldown` để theo dõi tiến độ toàn pipeline.
+- **Tự động dừng khi gặp BytePlus Challenge**: Nếu một batch bị HTML challenge, `main.py` dừng toàn bộ pipeline ngay lập tức và in cảnh báo thời gian chờ tối thiểu.
 
 ### 3. Sequential Engine (`fetch_tiki_products_sequential.py`)
 - **Cào tuần tự từng sản phẩm**: Sử dụng để debug sâu, kiểm tra phản hồi header/body chi tiết của server Tiki khi gặp lỗi.
@@ -148,24 +153,14 @@ python3 fetch_tiki_products.py \
   --delay-max 5.0
 ```
 
-#### 2. Chạy với 50 sản phẩm mẫu (Concurrency 2):
-```bash
-python3 fetch_tiki_products.py \
-  --input data/input/product_ids_50.txt \
-  --output data/output/concurrency/products_output.json \
-  --concurrency 2 \
-  --delay-min 1.5 \
-  --delay-max 4.0
-```
-
-#### 3. Chạy chính thức toàn bộ 200,000 sản phẩm:
+#### 2. Chạy chính thức toàn bộ 200,000 sản phẩm:
 ```bash
 python3 fetch_tiki_products.py \
   --input data/input/product_ids.txt \
   --output data/output/concurrency/products_output.json \
-  --concurrency 2 \
+  --concurrency 10 \
   --delay-min 2.0 \
-  --delay-max 6.0
+  --delay-max 5.0
 ```
 
 #### 📌 Danh sách các tham số CLI của `fetch_tiki_products.py`:
@@ -174,7 +169,7 @@ python3 fetch_tiki_products.py \
 | `--input` | `Path` | `data/input/product_ids.txt` | Đường dẫn file danh sách ID đầu vào |
 | `--output` | `Path` | `data/output/concurrency/products_output.json` | Đường dẫn file kết quả JSON |
 | `--limit` | `int` | `0` *(lấy hết)* | Giới hạn số lượng ID cần xử lý (vd: `--limit 500`) |
-| `--concurrency` | `int` | `2` *(1 hoặc 2)* | Số worker bất đồng bộ chạy song song |
+| `--concurrency` | `int` | **`10`** *(1-10)* | Số worker bất đồng bộ chạy song song |
 | `--delay-min` | `float` | `2.0` | Thời gian giãn cách tối thiểu giữa các request (giây) |
 | `--delay-max` | `float` | `8.0` | Thời gian giãn cách tối đa giữa các request (giây) |
 | `--timeout` | `float` | `20.0` | Thời gian timeout cho mỗi request (giây) |
@@ -188,22 +183,25 @@ Dùng để cào tuần tự từng sản phẩm phục vụ kiểm tra lỗi:
 ```bash
 python3 fetch_tiki_products_sequential.py \
   --input data/input/product_ids_10.txt \
-  --output data/output/sequential/products_sequential_output.json \
-  --delay 2.0
+  --output data/output/squential/products_sequential_output.json \
+  --delay-min 0.8 \
+  --delay-max 2.0
 ```
 
 ---
 
 ### Bước 4: Chạy Batch Streaming Engine (`main.py`)
 
-Dùng khi cần tự động phân tách kết quả thành nhiều file nhỏ (mỗi file chứa 1,000 sản phẩm):
+Dùng khi cần tự động phân tách kết quả thành nhiều file nhỏ (mỗi file chứa 1,000 sản phẩm, lưu tại `data/output/concurrency/parts/`):
 
 ```bash
 python3 main.py \
   --input data/input/product_ids.txt \
-  --concurrency 5 \
-  --requests-per-second 1 \
-  --batch-size 1000
+  --output-dir data/output/concurrency/parts \
+  --concurrency 10 \
+  --batch-size 1000 \
+  --delay-min 2.0 \
+  --delay-max 5.0
 ```
 
 ---

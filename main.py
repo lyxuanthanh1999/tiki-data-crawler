@@ -5,16 +5,16 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import List
+from types import SimpleNamespace
+from typing import Any, List
 
 from config import (
     BATCH_SIZE,
     DEFAULT_CONCURRENCY,
-    DEFAULT_REQUESTS_PER_SECOND,
     INPUT_DIR,
     OUTPUT_DIR,
 )
-from crawler import TikiAsyncCrawler
+from fetch_tiki_products import ResultStore, run_product_ids
 
 # Cấu hình logging
 logging.basicConfig(
@@ -23,6 +23,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("Main")
+DEFAULT_BATCH_OUTPUT_DIR = OUTPUT_DIR / "concurrency" / "parts"
+DEFAULT_SEED_OUTPUT = OUTPUT_DIR / "concurrency" / "products_output.json"
 
 
 def load_product_ids_from_file(file_path: Path) -> List[int]:
@@ -79,8 +81,135 @@ def create_sample_ids_file(file_path: Path, count: int = 20) -> List[int]:
     return sample_ids[:count]
 
 
+def chunk_ids(product_ids: List[int], batch_size: int) -> list[list[int]]:
+    return [
+        product_ids[index : index + batch_size]
+        for index in range(0, len(product_ids), batch_size)
+    ]
+
+
+def batch_output_path(output_dir: Path, batch_index: int) -> Path:
+    return output_dir / f"products_part_{batch_index:04d}.json"
+
+
+def summarize_batch(product_ids: list[int], output_file: Path) -> dict[str, int]:
+    store = ResultStore(output_file)
+    success = len(store.successful_ids)
+    permanent_failed = store.permanently_failed_count
+    retry_pending = sum(
+        1
+        for product_id in product_ids
+        if product_id not in store.successful_ids
+        and str(product_id) not in store.failed_permanent
+        and str(product_id) in store.retry_state
+        and not store.is_due(product_id)
+    )
+    due = sum(
+        1
+        for product_id in product_ids
+        if product_id not in store.successful_ids
+        and str(product_id) not in store.failed_permanent
+        and store.is_due(product_id)
+    )
+    done = success + permanent_failed
+    return {
+        "total": len(product_ids),
+        "success": success,
+        "permanent_failed": permanent_failed,
+        "done": done,
+        "due": due,
+        "retry_pending": retry_pending,
+        "cooldown": store.global_wait_remaining(),
+    }
+
+
+def load_saved_products(output_file: Path) -> list[dict[str, Any]]:
+    source = output_file.with_suffix(".jsonl") if output_file.with_suffix(".jsonl").exists() else output_file
+    if not source.exists():
+        return []
+    if source.suffix == ".jsonl":
+        with source.open("r", encoding="utf-8") as file:
+            return [json.loads(line) for line in file if line.strip()]
+    with source.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    return data if isinstance(data, list) else []
+
+
+def load_failed_permanent(output_file: Path) -> dict[str, dict[str, Any]]:
+    failed_file = output_file.with_suffix(".failed_permanent.json")
+    if not failed_file.exists():
+        return {}
+    try:
+        with failed_file.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+async def seed_parts_from_existing_output(
+    product_ids: list[int],
+    batch_size: int,
+    output_dir: Path,
+    seed_output: Path,
+) -> dict[str, int]:
+    products = load_saved_products(seed_output)
+    failed_permanent = load_failed_permanent(seed_output)
+    if not products and not failed_permanent:
+        return {"products_seeded": 0, "failed_seeded": 0, "batches_touched": 0}
+
+    id_to_batch = {
+        product_id: (index // batch_size) + 1
+        for index, product_id in enumerate(product_ids)
+    }
+    products_by_batch: dict[int, list[dict[str, Any]]] = {}
+    for product in products:
+        try:
+            product_id = int(product["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        batch_index = id_to_batch.get(product_id)
+        if batch_index is not None:
+            products_by_batch.setdefault(batch_index, []).append(product)
+
+    failed_by_batch: dict[int, dict[str, dict[str, Any]]] = {}
+    for product_id_text, failure in failed_permanent.items():
+        try:
+            product_id = int(product_id_text)
+        except ValueError:
+            continue
+        batch_index = id_to_batch.get(product_id)
+        if batch_index is not None:
+            failed_by_batch.setdefault(batch_index, {})[product_id_text] = failure
+
+    products_seeded = 0
+    failed_seeded = 0
+    touched_batches = set(products_by_batch) | set(failed_by_batch)
+    for batch_index in sorted(touched_batches):
+        store = ResultStore(batch_output_path(output_dir, batch_index))
+        for product in products_by_batch.get(batch_index, []):
+            if await store.save_product(product):
+                products_seeded += 1
+
+        new_failures = {
+            product_id_text: failure
+            for product_id_text, failure in failed_by_batch.get(batch_index, {}).items()
+            if product_id_text not in store.failed_permanent
+        }
+        if new_failures:
+            store.failed_permanent.update(new_failures)
+            store._write_json_atomic(store.failed_permanent_file, store.failed_permanent)
+            failed_seeded += len(new_failures)
+
+    return {
+        "products_seeded": products_seeded,
+        "failed_seeded": failed_seeded,
+        "batches_touched": len(touched_batches),
+    }
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Tiki Product Crawler - High Performance & Async")
+    parser = argparse.ArgumentParser(description="Tiki Product Crawler - Batch Orchestrator")
     parser.add_argument(
         "--input",
         type=str,
@@ -91,19 +220,13 @@ def main():
         "--concurrency",
         type=int,
         default=DEFAULT_CONCURRENCY,
-        help=f"Số lượng kết nối đồng thời (mặc định: {DEFAULT_CONCURRENCY})",
+        help=f"Số worker async cho mỗi batch (mặc định: {DEFAULT_CONCURRENCY}, tối đa 10)",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=BATCH_SIZE,
         help=f"Số sản phẩm mỗi file JSON output (mặc định: {BATCH_SIZE})",
-    )
-    parser.add_argument(
-        "--requests-per-second",
-        type=float,
-        default=DEFAULT_REQUESTS_PER_SECOND,
-        help=f"Gioi han request/giay (mac dinh: {DEFAULT_REQUESTS_PER_SECOND})",
     )
     parser.add_argument(
         "--limit",
@@ -114,19 +237,45 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default=str(OUTPUT_DIR),
-        help=f"Thư mục lưu các file JSON kết quả (mặc định: {OUTPUT_DIR})",
+        default=str(DEFAULT_BATCH_OUTPUT_DIR),
+        help=f"Thư mục lưu các file JSON theo batch (mặc định: {DEFAULT_BATCH_OUTPUT_DIR})",
     )
     parser.add_argument(
-        "--checkpoint-file",
+        "--delay-min",
+        type=float,
+        default=2.0,
+        help="Delay ngẫu nhiên tối thiểu giữa các request trong engine fetch_tiki_products.py",
+    )
+    parser.add_argument(
+        "--delay-max",
+        type=float,
+        default=5.0,
+        help="Delay ngẫu nhiên tối đa giữa các request trong engine fetch_tiki_products.py",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=20.0,
+        help="Timeout cho mỗi request",
+    )
+    parser.add_argument(
+        "--seed-from-output",
         type=str,
-        default="data/checkpoint.json",
-        help="File checkpoint cua dot crawl (mac dinh: data/checkpoint.json)",
+        default=str(DEFAULT_SEED_OUTPUT),
+        help=(
+            "Import dữ liệu đã crawl từ output cũ vào thư mục parts trước khi chạy "
+            f"(mặc định: {DEFAULT_SEED_OUTPUT})"
+        ),
     )
     parser.add_argument(
-        "--no-resume",
+        "--no-seed-existing",
         action="store_true",
-        help="Bỏ qua checkpoint cũ và bắt đầu cào mới từ đầu",
+        help="Không import dữ liệu từ output cũ vào parts",
+    )
+    parser.add_argument(
+        "--seed-only",
+        action="store_true",
+        help="Chỉ import dữ liệu output cũ sang parts rồi dừng, không gọi API",
     )
     parser.add_argument(
         "--generate-sample",
@@ -136,12 +285,16 @@ def main():
 
     args = parser.parse_args()
 
-    if args.concurrency < 1:
-        parser.error("--concurrency phai lon hon 0")
-    if args.requests_per_second <= 0:
-        parser.error("--requests-per-second phai lon hon 0")
+    if not 1 <= args.concurrency <= 10:
+        parser.error("--concurrency phải từ 1 đến 10")
     if args.batch_size < 1:
-        parser.error("--batch-size phai lon hon 0")
+        parser.error("--batch-size phải lớn hơn 0")
+    if args.delay_min < 0 or args.delay_max < args.delay_min:
+        parser.error("Cần 0 <= --delay-min <= --delay-max")
+    if args.timeout <= 0:
+        parser.error("--timeout phải > 0")
+    if args.seed_only and args.no_seed_existing:
+        parser.error("--seed-only không dùng chung với --no-seed-existing")
 
     sample_input_file = INPUT_DIR / "sample_product_ids.txt"
 
@@ -149,15 +302,25 @@ def main():
     if args.input:
         input_path = Path(args.input)
     else:
-        # Tìm file trong thư mục input_dir
-        input_files = list(INPUT_DIR.glob("*.txt")) + list(INPUT_DIR.glob("*.csv")) + list(INPUT_DIR.glob("*.json"))
-        if input_files:
-            input_path = input_files[0]
-            logger.info(f"Tự động chọn file input: {input_path}")
-        elif args.generate_sample or True:
-            input_path = sample_input_file
-            if not input_path.exists():
-                create_sample_ids_file(input_path)
+        default_input_file = INPUT_DIR / "product_ids.txt"
+        if default_input_file.exists():
+            input_path = default_input_file
+            logger.info(f"Tự động chọn file input mặc định: {input_path}")
+        else:
+            input_files = sorted(
+                list(INPUT_DIR.glob("*.txt"))
+                + list(INPUT_DIR.glob("*.csv"))
+                + list(INPUT_DIR.glob("*.json"))
+            )
+            if input_files:
+                input_path = input_files[0]
+                logger.info(f"Tự động chọn file input: {input_path}")
+            elif args.generate_sample:
+                input_path = sample_input_file
+                if not input_path.exists():
+                    create_sample_ids_file(input_path)
+            else:
+                parser.error("Không tìm thấy input. Hãy truyền --input hoặc dùng --generate-sample.")
 
     # Đọc danh sách ID
     product_ids = load_product_ids_from_file(input_path)
@@ -170,41 +333,127 @@ def main():
         logger.error("Danh sách product ID rỗng! Vui lòng cung cấp file input hợp lệ.")
         sys.exit(1)
 
-    # Khởi tạo Crawler
-    crawler = TikiAsyncCrawler(
-        concurrency=args.concurrency,
-        requests_per_second=args.requests_per_second,
-        batch_size=args.batch_size,
-        output_dir=Path(args.output_dir),
-        checkpoint_file=Path(args.checkpoint_file),
-        resume=not args.no_resume,
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    batches = chunk_ids(product_ids, args.batch_size)
+    if not args.no_seed_existing:
+        seed_summary = asyncio.run(
+            seed_parts_from_existing_output(
+                product_ids,
+                args.batch_size,
+                output_dir,
+                Path(args.seed_from_output),
+            )
+        )
+        logger.info(
+            "Seed từ output cũ: thêm %s products, %s permanent fails vào %s batch(es).",
+            seed_summary["products_seeded"],
+            seed_summary["failed_seeded"],
+            seed_summary["batches_touched"],
+        )
+        if args.seed_only:
+            logger.info("Hoàn tất seed-only, không gọi API.")
+            return
+    logger.info(
+        "Bắt đầu batch crawl: %s IDs, %s batch, batch_size=%s, concurrency=%s, delay=%.1f-%.1fs",
+        len(product_ids),
+        len(batches),
+        args.batch_size,
+        args.concurrency,
+        args.delay_min,
+        args.delay_max,
     )
 
-    # Thanh tiến độ
     try:
-        from tqdm import tqdm
+        for index, batch in enumerate(batches, start=1):
+            output_file = batch_output_path(output_dir, index)
+            before = summarize_batch(batch, output_file)
+            logger.info(
+                (
+                    "Batch #%04d/%04d status trước chạy: "
+                    "total=%s, success=%s, permanent=%s, done=%s, "
+                    "due=%s, pending_retry=%s, cooldown=%ss"
+                ),
+                index,
+                len(batches),
+                before["total"],
+                before["success"],
+                before["permanent_failed"],
+                before["done"],
+                before["due"],
+                before["retry_pending"],
+                before["cooldown"],
+            )
+            if before["cooldown"]:
+                logger.warning(
+                    (
+                        "Batch #%04d pending do HTML challenge/cooldown. "
+                        "Chạy lại sau ít nhất %ss. Output: %s"
+                    ),
+                    index,
+                    before["cooldown"],
+                    output_file,
+                )
+                break
 
-        pbar = tqdm(total=len(product_ids), desc="Crawling Tiki", unit="product")
+            if before["due"] == 0:
+                logger.info(
+                    (
+                        "Batch #%04d không có ID đến hạn xử lý. "
+                        "Bỏ qua. done=%s/%s, pending_retry=%s, output=%s"
+                    ),
+                    index,
+                    before["done"],
+                    before["total"],
+                    before["retry_pending"],
+                    output_file,
+                )
+                continue
 
-        def progress_cb(current, total):
-            pbar.update(1)
+            logger.info(
+                "Batch #%04d đang hoạt động: xử lý %s ID đến hạn -> %s",
+                index,
+                before["due"],
+                output_file,
+            )
+            batch_args = SimpleNamespace(
+                output=output_file,
+                concurrency=args.concurrency,
+                delay_min=args.delay_min,
+                delay_max=args.delay_max,
+                timeout=args.timeout,
+            )
+            asyncio.run(run_product_ids(batch, batch_args))
 
-        close_pbar = pbar.close
-    except ImportError:
-        def progress_cb(current, total):
-            if current % 100 == 0 or current == total:
-                percent = (current / total) * 100 if total > 0 else 0
-                logger.info(f"Progress: {current}/{total} ({percent:.1f}%)")
-
-        close_pbar = lambda: None
-
-    # Thực thi
-    try:
-        asyncio.run(crawler.run_async(product_ids, progress_callback=progress_cb))
+            after = summarize_batch(batch, output_file)
+            logger.info(
+                (
+                    "Batch #%04d/%04d status sau chạy: "
+                    "success=%s, permanent=%s, done=%s/%s, "
+                    "due=%s, pending_retry=%s, cooldown=%ss"
+                ),
+                index,
+                len(batches),
+                after["success"],
+                after["permanent_failed"],
+                after["done"],
+                after["total"],
+                after["due"],
+                after["retry_pending"],
+                after["cooldown"],
+            )
+            if after["cooldown"]:
+                logger.warning(
+                    (
+                        "Batch #%04d vừa bị pending do HTML challenge. "
+                        "Dừng toàn bộ main.py; chạy lại sau ít nhất %ss để resume."
+                    ),
+                    index,
+                    after["cooldown"],
+                )
+                break
     except KeyboardInterrupt:
-        logger.warning("\nQuá trình cào dữ liệu bị dừng bởi người dùng. Trạng thái đã được lưu vào checkpoint.")
-    finally:
-        close_pbar()
+        logger.warning("\nQuá trình cào dữ liệu bị dừng bởi người dùng. Chạy lại cùng lệnh để resume.")
 
 
 if __name__ == "__main__":

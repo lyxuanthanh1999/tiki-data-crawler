@@ -486,6 +486,11 @@ def load_product_ids(input_file: Path, limit: int) -> list[int]:
 
 
 async def run(args: argparse.Namespace) -> None:
+    product_ids = load_product_ids(args.input, args.limit)
+    await run_product_ids(product_ids, args)
+
+
+async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> None:
     """
     Hàm điều phối thực thi chính (Main Orchestrator):
     1. Đọc danh sách ID và kiểm tra dữ liệu đã lưu trong ResultStore.
@@ -497,7 +502,6 @@ async def run(args: argparse.Namespace) -> None:
     7. Fix #7: in log tổng kết tách biệt giữa lỗi tạm thời (retry) và lỗi vĩnh viễn (permanently failed).
     """
     run_start_time = time.time()
-    product_ids = load_product_ids(args.input, args.limit)
     store = ResultStore(args.output)
     counters = {"success": 0, "failed_temp": 0, "failed_perm": 0}
 
@@ -641,7 +645,7 @@ def parse_args() -> argparse.Namespace:
     - --input: File chứa danh sách ID đầu vào.
     - --output: File đích lưu kết quả JSON.
     - --limit: Giới hạn số lượng ID xử lý (0 là toàn bộ).
-    - --concurrency: Số worker chạy đồng thời (mặc định 2, tối đa 2 để tránh bị block).
+    - --concurrency: Số worker chạy đồng thời (mặc định 5, tối đa 10).
     - --delay-min / --delay-max: Khoảng thời gian giãn cách ngẫu nhiên giữa các request.
     - --timeout: Thời gian timeout cho mỗi HTTP request.
     """
@@ -649,7 +653,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--limit", type=int, default=0, help="0 = đọc toàn bộ ID")
-    parser.add_argument("--concurrency", type=int, default=2)
+    parser.add_argument("--concurrency", type=int, default=10)
     parser.add_argument("--delay-min", type=float, default=2.0)
     parser.add_argument("--delay-max", type=float, default=8.0)
     parser.add_argument("--timeout", type=float, default=20.0)
@@ -658,8 +662,8 @@ def parse_args() -> argparse.Namespace:
         parser.error(f"Không tìm thấy input: {args.input}")
     if args.limit < 0:
         parser.error("--limit phải >= 0")
-    if args.concurrency not in {1, 2}:
-        parser.error("--concurrency chỉ nên là 1 hoặc 2")
+    if not 1 <= args.concurrency <= 10:
+        parser.error("--concurrency phải từ 1 đến 10")
     if args.delay_min < 0 or args.delay_max < args.delay_min:
         parser.error("Cần 0 <= --delay-min <= --delay-max")
     if args.timeout <= 0:
