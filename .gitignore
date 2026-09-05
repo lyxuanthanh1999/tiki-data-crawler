@@ -1,0 +1,23 @@
+# Environments
+venv/
+.env
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE and OS
+.DS_Store
+.idea/
+.vscode/
+
+# AI & metadata
+.shared/
+.agent/
+GEMINI.md
+docs/
+plans/
+
+# Temp files
+*.tmp
