@@ -564,14 +564,16 @@ async def run(args: argparse.Namespace) -> None:
     for product_id in pending_ids:
         id_queue.put_nowait(product_id)
 
+    print(f"🚀 Khởi chạy {args.concurrency} worker(s) bất đồng bộ...")
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout,
         headers=DEFAULT_HEADERS,
         cookie_jar=aiohttp.CookieJar(),
     ) as session:
-        async def worker() -> None:
+        async def worker(worker_id: int) -> None:
             """Worker async lấy từng ID từ hàng đợi để xử lý cho đến khi hết queue hoặc có lệnh dừng."""
+            tag = f"[Worker {worker_id}]"
             while not stop_event.is_set():
                 try:
                     product_id = id_queue.get_nowait()
@@ -581,7 +583,7 @@ async def run(args: argparse.Namespace) -> None:
                 if result.status == "success":
                     if await store.save_product(result.product):
                         counters["success"] += 1
-                    print(f"[OK] {product_id} -> đã lưu ngay ({len(store.products)} products)")
+                    print(f"{tag} [OK] {product_id} -> đã lưu ngay ({len(store.products)} products)")
                     continue
 
                 wait_seconds = await store.record_failure(
@@ -603,21 +605,24 @@ async def run(args: argparse.Namespace) -> None:
                     # Task được cancel bởi asyncio.gather khi worker đầu tiên gặp challenge raise CancelledError.
                     stop_event.set()
                     print(
-                        f"[STOP] {product_id}: BytePlus HTML challenge. "
+                        f"{tag} [STOP] {product_id}: BytePlus HTML challenge. "
                         f"ID được hẹn retry sau {wait_seconds}s; dừng cả lượt chạy."
                     )
                     return
                 if wait_seconds:
                     src = f" (Retry-After: {result.retry_after}s)" if result.retry_after else ""
                     print(
-                        f"[RETRY] {product_id}: {result.reason}{src}; "
+                        f"{tag} [RETRY] {product_id}: {result.reason}{src}; "
                         f"hẹn lại sau {wait_seconds}s"
                     )
                 else:
-                    print(f"[FAILED] {product_id}: {result.reason}; đã hết retry → ghi permanent")
+                    print(f"{tag} [FAILED] {product_id}: {result.reason}; đã hết retry → ghi permanent")
 
-        # Fix #6: tạo tasks để có thể cancel khi cần
-        tasks = [asyncio.create_task(worker()) for _ in range(args.concurrency)]
+        # Fix #6: tạo tasks kèm worker_id để theo dõi chi tiết
+        tasks = [
+            asyncio.create_task(worker(worker_id=i + 1))
+            for i in range(args.concurrency)
+        ]
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
