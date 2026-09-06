@@ -18,7 +18,7 @@ TIKI_API_BASE_URL = "https://api.tiki.vn/product-detail/api/v1/products"
 
 # Crawler & Concurrency Settings
 # Gia tri khoi dau an toan; tang dan sau khi do ty le 429/HTML tren mang dang dung.
-DEFAULT_CONCURRENCY = 10
+DEFAULT_CONCURRENCY = 20
 DEFAULT_REQUESTS_PER_SECOND = 1.0
 BATCH_SIZE = 1000  # Number of products per output .json file
 MAX_RETRIES = 6    # Retry attempts on transient failure/rate limit

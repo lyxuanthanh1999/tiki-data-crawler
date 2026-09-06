@@ -56,7 +56,7 @@ Hệ thống cung cấp **3 chế độ thực thi** phù hợp với từng nhu
 
 ### 1. Concurrency Engine (`fetch_tiki_products.py`) - Khuyến nghị cho Production
 - **Lập trình bất đồng bộ (`asyncio` + `aiohttp`)**: Quản lý connection pool với keep-alive, pacing request ngẫu nhiên tự nhiên (`NaturalPacer`).
-- **Worker Pool có gắn nhãn**: Log mỗi request đều hiển thị `[Worker N]` để theo dõi worker nào đang xử lý ID nào. Hỗ trợ từ **1 đến 10 workers** đồng thời (mặc định: 10).
+- **Worker Pool có gắn nhãn**: Log mỗi request đều hiển thị `[Worker N]` để theo dõi worker nào đang xử lý ID nào. Hỗ trợ từ **1 đến 20 workers** đồng thời (mặc định: 20).
 - **Cung cấp public API `run_product_ids()`**: Cho phép các module khác (như `main.py`) gọi trực tiếp engine với danh sách ID tùy chỉnh, tái sử dụng toàn bộ logic retry/checkpoint.
 - **Cơ chế Checkpoint đa lớp**:
   - `products_output.jsonl`: Append từng bản ghi và `fsync` ngay lập tức chống mất dữ liệu khi crash/tắt đột ngột.
@@ -158,9 +158,9 @@ python3 fetch_tiki_products.py \
 python3 fetch_tiki_products.py \
   --input data/input/product_ids.txt \
   --output data/output/concurrency/products_output.json \
-  --concurrency 10 \
-  --delay-min 2.0 \
-  --delay-max 5.0
+  --concurrency 20 \
+  --delay-min 0.3 \
+  --delay-max 1.0
 ```
 
 #### 📌 Danh sách các tham số CLI của `fetch_tiki_products.py`:
@@ -169,7 +169,7 @@ python3 fetch_tiki_products.py \
 | `--input` | `Path` | `data/input/product_ids.txt` | Đường dẫn file danh sách ID đầu vào |
 | `--output` | `Path` | `data/output/concurrency/products_output.json` | Đường dẫn file kết quả JSON |
 | `--limit` | `int` | `0` *(lấy hết)* | Giới hạn số lượng ID cần xử lý (vd: `--limit 500`) |
-| `--concurrency` | `int` | **`10`** *(1-10)* | Số worker bất đồng bộ chạy song song |
+| `--concurrency` | `int` | **`20`** *(1-20)* | Số worker bất đồng bộ chạy song song |
 | `--delay-min` | `float` | `2.0` | Thời gian giãn cách tối thiểu giữa các request (giây) |
 | `--delay-max` | `float` | `8.0` | Thời gian giãn cách tối đa giữa các request (giây) |
 | `--timeout` | `float` | `20.0` | Thời gian timeout cho mỗi request (giây) |
@@ -198,10 +198,10 @@ Dùng khi cần tự động phân tách kết quả thành nhiều file nhỏ (
 python3 main.py \
   --input data/input/product_ids.txt \
   --output-dir data/output/concurrency/parts \
-  --concurrency 10 \
+  --concurrency 20 \
   --batch-size 1000 \
-  --delay-min 2.0 \
-  --delay-max 5.0
+  --delay-min 0.3 \
+  --delay-max 1.0
 ```
 
 ---

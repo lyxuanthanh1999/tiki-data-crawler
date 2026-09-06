@@ -1,0 +1,252 @@
+{
+  "119023819": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693164.6274052
+  },
+  "132839723": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693169.498204
+  },
+  "164552896": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693171.9519382
+  },
+  "84158538": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693175.974379
+  },
+  "90924509": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693179.051914
+  },
+  "183531614": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693181.830615
+  },
+  "168552095": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788693182.168921
+  },
+  "35610065": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693186.128053
+  },
+  "198091751": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693188.204437
+  },
+  "177733041": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693191.643798
+  },
+  "171936430": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693194.225312
+  },
+  "129719977": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693198.15121
+  },
+  "169848121": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693202.2475588
+  },
+  "75524289": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693204.9808881
+  },
+  "133713681": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693208.278358
+  },
+  "163842675": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693262.745687
+  },
+  "172937537": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693266.6101592
+  },
+  "171094176": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788693268.971315
+  },
+  "94460737": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696535.3125691
+  },
+  "129720083": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696539.2985442
+  },
+  "138001444": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696544.1246562
+  },
+  "54351444": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696547.598737
+  },
+  "43060150": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696549.85081
+  },
+  "151703213": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788696551.742334
+  },
+  "126527597": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696553.655524
+  },
+  "89822608": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696558.313607
+  },
+  "128786073": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696562.130944
+  },
+  "21074601": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696564.795455
+  },
+  "39047930": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696568.923758
+  },
+  "126515937": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696571.414509
+  },
+  "170311438": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696799.989748
+  },
+  "146033685": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696804.65186
+  },
+  "165689497": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696808.659999
+  },
+  "13781703": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696910.269601
+  },
+  "14030397": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696912.296073
+  },
+  "14030385": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696916.734549
+  },
+  "129205626": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696919.337399
+  },
+  "14000023": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696924.110773
+  },
+  "14537227": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696926.592808
+  },
+  "84224286": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788696928.243476
+  },
+  "40390728": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696929.323325
+  },
+  "135475765": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696932.965792
+  },
+  "212427026": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696936.9568489
+  },
+  "115224750": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696941.581604
+  },
+  "141963581": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696945.222931
+  },
+  "168158381": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696949.4176772
+  },
+  "70806194": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788696951.909507
+  },
+  "168539370": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788697336.465756
+  },
+  "119023182": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788697339.781773
+  },
+  "126514634": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788697343.349278
+  }
+}

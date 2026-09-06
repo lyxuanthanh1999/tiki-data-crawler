@@ -220,7 +220,7 @@ def main():
         "--concurrency",
         type=int,
         default=DEFAULT_CONCURRENCY,
-        help=f"Số worker async cho mỗi batch (mặc định: {DEFAULT_CONCURRENCY}, tối đa 10)",
+        help=f"Số worker async cho mỗi batch (mặc định: {DEFAULT_CONCURRENCY}, tối đa 20)",
     )
     parser.add_argument(
         "--batch-size",
@@ -285,8 +285,8 @@ def main():
 
     args = parser.parse_args()
 
-    if not 1 <= args.concurrency <= 10:
-        parser.error("--concurrency phải từ 1 đến 10")
+    if not 1 <= args.concurrency <= 20:
+        parser.error("--concurrency phải từ 1 đến 20")
     if args.batch_size < 1:
         parser.error("--batch-size phải lớn hơn 0")
     if args.delay_min < 0 or args.delay_max < args.delay_min:
