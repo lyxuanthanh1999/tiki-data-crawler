@@ -28,6 +28,20 @@ class MainBatchingTests(unittest.IsolatedAsyncioTestCase):
             Path("data/output/concurrency/parts/products_part_0012.json"),
         )
 
+    def test_batch_range_slice_uses_original_batch_numbering(self):
+        batches = chunk_ids(list(range(1, 2501)), 1000)
+        selected = [
+            (index, batches[index - 1])
+            for index in range(2, 3)
+        ]
+
+        self.assertEqual(selected[0][0], 2)
+        self.assertEqual(selected[0][1][0], 1001)
+        self.assertEqual(
+            batch_output_path(Path("parts"), selected[0][0]),
+            Path("parts/products_part_0002.json"),
+        )
+
     async def test_seed_parts_from_existing_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

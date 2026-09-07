@@ -235,6 +235,18 @@ def main():
         help="Giới hạn số lượng ID cần cào (dùng để test nhanh, 0 = cào toàn bộ)",
     )
     parser.add_argument(
+        "--start-batch",
+        type=int,
+        default=1,
+        help="Batch bắt đầu xử lý, đánh số từ 1",
+    )
+    parser.add_argument(
+        "--end-batch",
+        type=int,
+        default=0,
+        help="Batch cuối cùng cần xử lý, 0 = tới batch cuối",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default=str(DEFAULT_BATCH_OUTPUT_DIR),
@@ -282,6 +294,15 @@ def main():
         action="store_true",
         help="Tạo file danh sách ID mẫu để chạy thử",
     )
+    parser.add_argument(
+        "--worker-url",
+        type=str,
+        default=None,
+        help=(
+            "URL Cloudflare Worker Edge Proxy (bỏ trống = gọi trực tiếp Tiki API). "
+            "Ví dụ: https://tiki-proxy-worker.tyanh185.workers.dev"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -295,6 +316,10 @@ def main():
         parser.error("--timeout phải > 0")
     if args.seed_only and args.no_seed_existing:
         parser.error("--seed-only không dùng chung với --no-seed-existing")
+    if args.start_batch < 1:
+        parser.error("--start-batch phải >= 1")
+    if args.end_batch and args.end_batch < args.start_batch:
+        parser.error("--end-batch phải >= --start-batch hoặc bằng 0")
 
     sample_input_file = INPUT_DIR / "sample_product_ids.txt"
 
@@ -336,6 +361,17 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     batches = chunk_ids(product_ids, args.batch_size)
+    total_batches = len(batches)
+    start_batch = args.start_batch
+    end_batch = args.end_batch or total_batches
+    if start_batch > total_batches:
+        logger.info(
+            "start-batch=%s lớn hơn tổng số batch=%s, không có gì để chạy.",
+            start_batch,
+            total_batches,
+        )
+        return
+    end_batch = min(end_batch, total_batches)
     if not args.no_seed_existing:
         seed_summary = asyncio.run(
             seed_parts_from_existing_output(
@@ -355,9 +391,14 @@ def main():
             logger.info("Hoàn tất seed-only, không gọi API.")
             return
     logger.info(
-        "Bắt đầu batch crawl: %s IDs, %s batch, batch_size=%s, concurrency=%s, delay=%.1f-%.1fs",
+        (
+            "Bắt đầu batch crawl: %s IDs, tổng %s batch, chạy batch %s-%s, "
+            "batch_size=%s, concurrency=%s, delay=%.1f-%.1fs"
+        ),
         len(product_ids),
-        len(batches),
+        total_batches,
+        start_batch,
+        end_batch,
         args.batch_size,
         args.concurrency,
         args.delay_min,
@@ -365,7 +406,8 @@ def main():
     )
 
     try:
-        for index, batch in enumerate(batches, start=1):
+        for index in range(start_batch, end_batch + 1):
+            batch = batches[index - 1]
             output_file = batch_output_path(output_dir, index)
             before = summarize_batch(batch, output_file)
             logger.info(
@@ -375,7 +417,7 @@ def main():
                     "due=%s, pending_retry=%s, cooldown=%ss"
                 ),
                 index,
-                len(batches),
+                total_batches,
                 before["total"],
                 before["success"],
                 before["permanent_failed"],
@@ -422,6 +464,7 @@ def main():
                 delay_min=args.delay_min,
                 delay_max=args.delay_max,
                 timeout=args.timeout,
+                worker_url=args.worker_url,
             )
             asyncio.run(run_product_ids(batch, batch_args))
 
@@ -433,7 +476,7 @@ def main():
                     "due=%s, pending_retry=%s, cooldown=%ss"
                 ),
                 index,
-                len(batches),
+                total_batches,
                 after["success"],
                 after["permanent_failed"],
                 after["done"],

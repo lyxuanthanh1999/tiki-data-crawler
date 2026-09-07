@@ -1,0 +1,27 @@
+{
+  "141282217": {
+    "reason": "http_404",
+    "attempts": 1,
+    "timestamp": 1788705688.5837052
+  },
+  "191545555": {
+    "reason": "http_404",
+    "attempts": 1,
+    "timestamp": 1788705688.5850098
+  },
+  "74838470": {
+    "reason": "http_404",
+    "attempts": 1,
+    "timestamp": 1788705688.825557
+  },
+  "115926351": {
+    "reason": "http_404",
+    "attempts": 1,
+    "timestamp": 1788705689.869577
+  },
+  "139245956": {
+    "reason": "http_404",
+    "attempts": 2,
+    "timestamp": 1788787310.924953
+  }
+}

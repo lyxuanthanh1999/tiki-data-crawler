@@ -386,6 +386,7 @@ async def fetch_product(
     session: aiohttp.ClientSession,
     pacer: NaturalPacer,
     product_id: int,
+    api_base_url: str = TIKI_API_BASE_URL,
 ) -> FetchResult:
     """
     Gửi HTTP GET request đến Tiki API để lấy chi tiết sản phẩm.
@@ -404,11 +405,24 @@ async def fetch_product(
     :return: Đối tượng FetchResult chứa trạng thái và dữ liệu tương ứng.
     """
     await pacer.wait()
-    url = f"{TIKI_API_BASE_URL}/{product_id}"
+    url = f"{api_base_url.rstrip('/')}/{product_id}"
     try:
         async with session.get(url) as response:
             body = await response.text()
             content_type = response.headers.get("Content-Type", "").lower()
+
+            # Phát hiện Cloudflare Worker bị chạm trần Quota (100k requests/ngày) hoặc Worker Rate Limit
+            body_lower = body.lower()
+            is_cf_quota = (
+                response.status in {429, 530, 1015, 1027}
+                or "exceeded" in body_lower
+                or "worker rate limit" in body_lower
+                or "error 1015" in body_lower
+                or "error 1027" in body_lower
+            ) and ("cloudflare" in body_lower or "worker" in body_lower or "workers.dev" in api_base_url)
+
+            if is_cf_quota:
+                return FetchResult("quota_exceeded", reason="cf_worker_quota_exceeded")
 
             # Sản phẩm không tồn tại / đã bị xóa
             if response.status == 404:
@@ -556,6 +570,20 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
         print_summary()
         return
 
+    # Resolve API endpoint: Cloudflare Worker hoặc Tiki trực tiếp
+    worker_url = getattr(args, "worker_url", None)
+    api_base_url = worker_url.rstrip("/") if worker_url else TIKI_API_BASE_URL
+    is_worker_mode = bool(worker_url)
+
+    # Chọn headers phù hợp: Worker không cần Origin/Referer của Tiki
+    session_headers = DEFAULT_HEADERS if not is_worker_mode else {
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+    }
+
+    endpoint_label = f"☁️  Cloudflare Worker → {api_base_url}" if is_worker_mode else f"🎯 Tiki trực tiếp → {api_base_url}"
+    print(f"🌐 API endpoint: {endpoint_label}")
+
     timeout = aiohttp.ClientTimeout(total=args.timeout)
     connector = aiohttp.TCPConnector(
         limit=args.concurrency,
@@ -572,7 +600,7 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout,
-        headers=DEFAULT_HEADERS,
+        headers=session_headers,
         cookie_jar=aiohttp.CookieJar(),
     ) as session:
         async def worker(worker_id: int) -> None:
@@ -583,7 +611,7 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
                     product_id = id_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     return
-                result = await fetch_product(session, pacer, product_id)
+                result = await fetch_product(session, pacer, product_id, api_base_url)
                 if result.status == "success":
                     if await store.save_product(result.product):
                         counters["success"] += 1
@@ -594,7 +622,7 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
                     product_id,
                     result.reason,
                     retryable=result.status != "terminal",
-                    stop_all=result.status == "challenge",
+                    stop_all=result.status in {"challenge", "quota_exceeded"},
                     server_retry_after=result.retry_after,  # Fix #2
                 )
 
@@ -603,6 +631,17 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
                     counters["failed_perm"] += 1
                 else:
                     counters["failed_temp"] += 1
+
+                if result.status == "quota_exceeded":
+                    stop_event.set()
+                    print(
+                        f"\n🛑 ====================================================================\n"
+                        f"🛑 [THÔNG BÁO] ĐÃ CHẠM HẠN MỨC 100,000 REQUESTS/NGÀY CỦA CLOUDFLARE!\n"
+                        f"🛑 Tiến trình tại {tag} đã ngắt an toàn và đưa vào trạng thái PENDING.\n"
+                        f"🛑 Không mất dữ liệu! Sang ngày mới (sau 07:00 sáng) chỉ cần bật lại để chạy tiếp.\n"
+                        f"🛑 ====================================================================\n"
+                    )
+                    return
 
                 if result.status == "challenge":
                     # Fix #6: set stop_event và return ngay — các worker khác sẽ thoát ở đầu vòng lặp tiếp theo.
@@ -657,6 +696,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--delay-min", type=float, default=2.0)
     parser.add_argument("--delay-max", type=float, default=8.0)
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--worker-url",
+        type=str,
+        default=None,
+        help=(
+            "URL Cloudflare Worker Edge Proxy (bỏ trống = gọi trực tiếp Tiki API). "
+            "Ví dụ: https://tiki-proxy-worker.tyanh185.workers.dev"
+        ),
+    )
     args = parser.parse_args()
     if not args.input.exists():
         parser.error(f"Không tìm thấy input: {args.input}")

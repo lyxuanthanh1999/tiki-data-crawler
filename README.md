@@ -173,6 +173,7 @@ python3 fetch_tiki_products.py \
 | `--delay-min` | `float` | `2.0` | Thời gian giãn cách tối thiểu giữa các request (giây) |
 | `--delay-max` | `float` | `8.0` | Thời gian giãn cách tối đa giữa các request (giây) |
 | `--timeout` | `float` | `20.0` | Thời gian timeout cho mỗi request (giây) |
+| `--worker-url` | `str` | `None` *(Tiki API)* | URL Cloudflare Worker Edge Proxy (vd: `https://tiki-proxy-worker.tyanh185.workers.dev`) |
 
 ---
 
@@ -200,9 +201,35 @@ python3 main.py \
   --output-dir data/output/concurrency/parts \
   --concurrency 20 \
   --batch-size 1000 \
+  --start-batch 1 \
+  --end-batch 0 \
   --delay-min 0.3 \
   --delay-max 1.0
 ```
+
+#### ⚡ Chạy Hybrid song song 2 Process (Tiki Direct + Cloudflare Worker Proxy):
+Tận dụng 2 dải IP riêng biệt để cào 200,000 ID không bị WAF/Rate limit:
+
+```bash
+# Process 1: 100k ID đầu chạy trực tiếp Tiki API (IP mạng nhà)
+python3 main.py \
+  --input data/input/product_ids_part1.txt \
+  --output-dir data/output/concurrency/parts \
+  --concurrency 10 \
+  --delay-min 1.0 \
+  --delay-max 3.0
+
+# Process 2: 100k ID sau chạy qua Cloudflare Worker Edge Proxy (IP Cloudflare)
+python3 main.py \
+  --input data/input/product_ids_part2.txt \
+  --output-dir data/output/concurrency/parts \
+  --concurrency 15 \
+  --delay-min 1.0 \
+  --delay-max 3.0 \
+  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev
+```
+
+Trong PyCharm: tạo 2 Run Configuration kiểu Python, chọn script `main.py`, bật **Allow parallel run**, rồi điền tương ứng vào ô `Parameters`.
 
 ---
 
