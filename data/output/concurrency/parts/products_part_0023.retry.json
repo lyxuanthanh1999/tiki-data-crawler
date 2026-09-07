@@ -1,0 +1,82 @@
+{
+  "684967": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788796261.3608599
+  },
+  "153995609": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788796433.8883479
+  },
+  "191081531": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788796434.9375439
+  },
+  "107102307": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788796436.045535
+  },
+  "40717093": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788796438.183846
+  },
+  "199553834": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788796439.564859
+  },
+  "220683262": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788796441.82347
+  },
+  "13762617": {
+    "attempts": 1,
+    "reason": "ClientConnectorError",
+    "next_retry_at": 1788796443.332883
+  },
+  "174072448": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788796452.2785861
+  },
+  "76148728": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788796465.2626402
+  },
+  "49346680": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788796467.2675982
+  },
+  "155340731": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788796470.268058
+  },
+  "193128528": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788796475.272341
+  },
+  "136983436": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788796476.260946
+  },
+  "104944649": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788796477.2600489
+  },
+  "7758258": {
+    "attempts": 1,
+    "reason": "ClientPayloadError",
+    "next_retry_at": 1788797067.919772
+  }
+}

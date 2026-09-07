@@ -1,0 +1,177 @@
+{
+  "101816356": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795886.789527
+  },
+  "101538804": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795888.574198
+  },
+  "7730918": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795890.190621
+  },
+  "35505081": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795891.445596
+  },
+  "186689883": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795892.5818188
+  },
+  "90718910": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795894.094254
+  },
+  "91624883": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795895.75714
+  },
+  "203927361": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795897.639906
+  },
+  "51714930": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795899.942435
+  },
+  "51714436": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795901.8492548
+  },
+  "171146593": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795903.293067
+  },
+  "36798175": {
+    "attempts": 1,
+    "reason": "timeout",
+    "next_retry_at": 1788795904.672083
+  },
+  "205573728": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795904.850842
+  },
+  "91625748": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795906.950519
+  },
+  "199632460": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795908.684206
+  },
+  "170336454": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795909.961704
+  },
+  "252913638": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795911.5118878
+  },
+  "100754323": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795912.5543199
+  },
+  "106990572": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795914.273424
+  },
+  "45818002": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795915.960767
+  },
+  "160876375": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795917.796157
+  },
+  "170523468": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795920.0520031
+  },
+  "249277518": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795921.379126
+  },
+  "87731553": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795922.4504
+  },
+  "217322448": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795923.817852
+  },
+  "9979080": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795924.987502
+  },
+  "164433293": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795926.056463
+  },
+  "217334538": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795927.190829
+  },
+  "4679795": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795929.236425
+  },
+  "54627684": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788795931.0805702
+  },
+  "204208031": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788796253.410243
+  },
+  "25313483": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788796254.7622678
+  },
+  "57100441": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788796256.9884238
+  },
+  "99145014": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788796259.2420459
+  },
+  "129916835": {
+    "attempts": 1,
+    "reason": "ClientConnectorDNSError",
+    "next_retry_at": 1788796260.771829
+  }
+}
