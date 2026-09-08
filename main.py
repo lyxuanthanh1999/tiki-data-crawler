@@ -4,6 +4,7 @@ import csv
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List
@@ -208,6 +209,43 @@ async def seed_parts_from_existing_output(
     }
 
 
+def wait_for_cooldown(
+    store: ResultStore,
+    batch_index: int,
+    auto_wait_interval: float,
+    max_retries: int,
+) -> bool:
+    """
+    Chờ cho đến khi hết cooldown WAF hoặc vượt quá max_retries.
+    Trả về True nếu cooldown đã hết, False nếu vượt quá max_retries hoặc bị ngắt.
+    """
+    waf_retries = 0
+    while True:
+        cooldown = store.global_wait_remaining()
+        if cooldown <= 0:
+            logger.info("Batch #%04d: Cooldown WAF đã kết thúc! Sẵn sàng chạy tiếp.", batch_index)
+            return True
+        waf_retries += 1
+        if max_retries > 0 and waf_retries > max_retries:
+            logger.error(
+                "Batch #%04d: Đã vượt quá số lần chờ WAF tối đa (%s lần). Dừng batch.",
+                batch_index,
+                max_retries,
+            )
+            return False
+        logger.warning(
+            "Batch #%04d đang cooldown do WAF (còn %ss ~ %.1f phút). "
+            "Tiến trình đang ngủ, tự động kiểm tra lại sau %ss... (Lần %s/%s)",
+            batch_index,
+            cooldown,
+            cooldown / 60,
+            min(cooldown, max(5, int(auto_wait_interval))),
+            waf_retries,
+            max_retries if max_retries > 0 else "∞",
+        )
+        time.sleep(min(cooldown, max(5, int(auto_wait_interval))))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tiki Product Crawler - Batch Orchestrator")
     parser.add_argument(
@@ -303,6 +341,31 @@ def main():
             "Ví dụ: https://tiki-proxy-worker.tyanh185.workers.dev"
         ),
     )
+    parser.add_argument(
+        "--auto-wait",
+        dest="auto_wait",
+        action="store_true",
+        default=True,
+        help="Tự động ngủ chờ khi gặp WAF/cooldown và tự cào tiếp (mặc định: bật)",
+    )
+    parser.add_argument(
+        "--no-auto-wait",
+        dest="auto_wait",
+        action="store_false",
+        help="Tắt tự động ngủ chờ khi gặp WAF (thoát tiến trình ngay)",
+    )
+    parser.add_argument(
+        "--auto-wait-interval",
+        type=float,
+        default=30.0,
+        help="Khoảng thời gian kiểm tra lại cooldown khi đang Auto-Wait (giây, mặc định: 30.0)",
+    )
+    parser.add_argument(
+        "--max-waf-retries",
+        type=int,
+        default=10,
+        help="Số lần Auto-Wait tối đa cho một batch trước khi dừng (0 = không giới hạn, mặc định: 10)",
+    )
 
     args = parser.parse_args()
 
@@ -314,6 +377,10 @@ def main():
         parser.error("Cần 0 <= --delay-min <= --delay-max")
     if args.timeout <= 0:
         parser.error("--timeout phải > 0")
+    if args.auto_wait_interval <= 0:
+        parser.error("--auto-wait-interval phải > 0")
+    if args.max_waf_retries < 0:
+        parser.error("--max-waf-retries phải >= 0")
     if args.seed_only and args.no_seed_existing:
         parser.error("--seed-only không dùng chung với --no-seed-existing")
     if args.start_batch < 1:
@@ -406,95 +473,126 @@ def main():
     )
 
     try:
+        stop_pipeline = False
         for index in range(start_batch, end_batch + 1):
+            if stop_pipeline:
+                break
             batch = batches[index - 1]
             output_file = batch_output_path(output_dir, index)
-            before = summarize_batch(batch, output_file)
-            logger.info(
-                (
-                    "Batch #%04d/%04d status trước chạy: "
-                    "total=%s, success=%s, permanent=%s, done=%s, "
-                    "due=%s, pending_retry=%s, cooldown=%ss"
-                ),
-                index,
-                total_batches,
-                before["total"],
-                before["success"],
-                before["permanent_failed"],
-                before["done"],
-                before["due"],
-                before["retry_pending"],
-                before["cooldown"],
-            )
-            if before["cooldown"]:
-                logger.warning(
-                    (
-                        "Batch #%04d pending do HTML challenge/cooldown. "
-                        "Chạy lại sau ít nhất %ss. Output: %s"
-                    ),
-                    index,
-                    before["cooldown"],
-                    output_file,
-                )
-                break
 
-            if before["due"] == 0:
+            while True:
+                store = ResultStore(output_file)
+                cooldown = store.global_wait_remaining()
+                if cooldown > 0:
+                    if not args.auto_wait:
+                        logger.warning(
+                            "Batch #%04d pending do HTML challenge/cooldown (%ss). Dừng main.py. Output: %s",
+                            index,
+                            cooldown,
+                            output_file,
+                        )
+                        stop_pipeline = True
+                        break
+                    if not wait_for_cooldown(store, index, args.auto_wait_interval, args.max_waf_retries):
+                        stop_pipeline = True
+                        break
+
+                current_status = summarize_batch(batch, output_file)
                 logger.info(
                     (
-                        "Batch #%04d không có ID đến hạn xử lý. "
-                        "Bỏ qua. done=%s/%s, pending_retry=%s, output=%s"
+                        "Batch #%04d/%04d status: "
+                        "total=%s, success=%s, permanent=%s, done=%s, "
+                        "due=%s, pending_retry=%s, cooldown=%ss"
                     ),
                     index,
-                    before["done"],
-                    before["total"],
-                    before["retry_pending"],
+                    total_batches,
+                    current_status["total"],
+                    current_status["success"],
+                    current_status["permanent_failed"],
+                    current_status["done"],
+                    current_status["due"],
+                    current_status["retry_pending"],
+                    current_status["cooldown"],
+                )
+
+                if current_status["due"] == 0:
+                    logger.info(
+                        (
+                            "Batch #%04d không có ID đến hạn xử lý. "
+                            "Hoàn tất batch. done=%s/%s, pending_retry=%s, output=%s"
+                        ),
+                        index,
+                        current_status["done"],
+                        current_status["total"],
+                        current_status["retry_pending"],
+                        output_file,
+                    )
+                    break
+
+                logger.info(
+                    "Batch #%04d đang hoạt động: xử lý %s ID đến hạn -> %s",
+                    index,
+                    current_status["due"],
                     output_file,
                 )
-                continue
+                batch_args = SimpleNamespace(
+                    output=output_file,
+                    concurrency=args.concurrency,
+                    delay_min=args.delay_min,
+                    delay_max=args.delay_max,
+                    timeout=args.timeout,
+                    worker_url=args.worker_url,
+                )
+                try:
+                    asyncio.run(run_product_ids(batch, batch_args))
+                except Exception as exc:
+                    logger.error("Batch #%04d gặp ngoại lệ trong quá trình chạy: %s", index, exc)
+                    if args.auto_wait:
+                        logger.info("Chờ 10s trước khi thử lại batch #%04d...", index)
+                        time.sleep(10)
+                        continue
+                    else:
+                        stop_pipeline = True
+                        break
 
-            logger.info(
-                "Batch #%04d đang hoạt động: xử lý %s ID đến hạn -> %s",
-                index,
-                before["due"],
-                output_file,
-            )
-            batch_args = SimpleNamespace(
-                output=output_file,
-                concurrency=args.concurrency,
-                delay_min=args.delay_min,
-                delay_max=args.delay_max,
-                timeout=args.timeout,
-                worker_url=args.worker_url,
-            )
-            asyncio.run(run_product_ids(batch, batch_args))
-
-            after = summarize_batch(batch, output_file)
-            logger.info(
-                (
-                    "Batch #%04d/%04d status sau chạy: "
-                    "success=%s, permanent=%s, done=%s/%s, "
-                    "due=%s, pending_retry=%s, cooldown=%ss"
-                ),
-                index,
-                total_batches,
-                after["success"],
-                after["permanent_failed"],
-                after["done"],
-                after["total"],
-                after["due"],
-                after["retry_pending"],
-                after["cooldown"],
-            )
-            if after["cooldown"]:
-                logger.warning(
+                after = summarize_batch(batch, output_file)
+                logger.info(
                     (
-                        "Batch #%04d vừa bị pending do HTML challenge. "
-                        "Dừng toàn bộ main.py; chạy lại sau ít nhất %ss để resume."
+                        "Batch #%04d/%04d status sau chạy: "
+                        "success=%s, permanent=%s, done=%s/%s, "
+                        "due=%s, pending_retry=%s, cooldown=%ss"
                     ),
                     index,
+                    total_batches,
+                    after["success"],
+                    after["permanent_failed"],
+                    after["done"],
+                    after["total"],
+                    after["due"],
+                    after["retry_pending"],
                     after["cooldown"],
                 )
-                break
+
+                if after["cooldown"] > 0:
+                    if not args.auto_wait:
+                        logger.warning(
+                            "Batch #%04d vừa bị pending do HTML challenge (%ss). Dừng main.py.",
+                            index,
+                            after["cooldown"],
+                        )
+                        stop_pipeline = True
+                        break
+                    logger.warning("Batch #%04d gặp WAF challenge, tiến hành Auto-Wait...", index)
+                    store = ResultStore(output_file)
+                    if not wait_for_cooldown(store, index, args.auto_wait_interval, args.max_waf_retries):
+                        stop_pipeline = True
+                        break
+                    # Cooldown đã hết -> vòng lặp while True tiếp tục chạy nốt ID còn lại của batch này
+                    continue
+
+                # Nếu sau khi chạy không bị cooldown và không còn due -> batch đã hoàn thành
+                if after["due"] == 0:
+                    break
     except KeyboardInterrupt:
         logger.warning("\nQuá trình cào dữ liệu bị dừng bởi người dùng. Chạy lại cùng lệnh để resume.")
 

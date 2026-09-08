@@ -136,6 +136,27 @@ class MainBatchingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(summary["due"], 1)
             self.assertEqual(summary["retry_pending"], 0)
 
+    def test_wait_for_cooldown_returns_true_when_no_cooldown(self):
+        from unittest.mock import MagicMock
+        from main import wait_for_cooldown
+
+        mock_store = MagicMock()
+        mock_store.global_wait_remaining.return_value = 0
+
+        result = wait_for_cooldown(mock_store, batch_index=1, auto_wait_interval=0.01, max_retries=2)
+        self.assertTrue(result)
+
+    def test_wait_for_cooldown_returns_false_when_max_retries_exceeded(self):
+        from unittest.mock import MagicMock
+        from main import wait_for_cooldown
+
+        mock_store = MagicMock()
+        mock_store.global_wait_remaining.return_value = 100
+
+        result = wait_for_cooldown(mock_store, batch_index=1, auto_wait_interval=0.01, max_retries=2)
+        self.assertFalse(result)
+
 
 if __name__ == "__main__":
     unittest.main()
+

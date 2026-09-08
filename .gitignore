@@ -21,3 +21,13 @@ plans/
 
 # Temp files
 *.tmp
+
+# Runtime logs & PID files
+logs/
+*.log
+*.pids
+
+# Large consolidated output files (>100MB exceeds GitHub limits; rebuild via merge_parts.py)
+data/output/all_products.csv
+data/output/concurrency/products_output.json
+data/output/concurrency/products_output.jsonl

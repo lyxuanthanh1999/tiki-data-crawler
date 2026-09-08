@@ -233,6 +233,61 @@ Trong PyCharm: tạo 2 Run Configuration kiểu Python, chọn script `main.py`,
 
 ---
 
+### Bước 5: Chạy Tự vận hành Không chạm (Zero-Touch Unattended Automation)
+
+Hệ thống cung cấp trọn bộ script tự động hóa hoàn toàn 200,000 sản phẩm chia cho 5 Cloudflare Worker Proxies, tích hợp cơ chế **Auto-Wait Loop** (bị WAF thì tự ngủ đếm ngược rồi tự cào tiếp, không thoát tiến trình) và **macOS LaunchAgent** (tự chạy ngầm khi mở máy):
+
+#### 1. Khởi chạy 5 Process song song bằng 1 lệnh duy nhất:
+```bash
+./run_all.sh
+```
+* Tự động kiểm tra kết nối WiFi/Internet (chờ đến khi có mạng mới bắt đầu).
+* Tự động kích hoạt song song 5 process tương ứng 5 dải batch:
+  - **Process 1**: Batch 0001 - 0040 qua `tiki-proxy-worker-1` (Log: `logs/p1.log`)
+  - **Process 2**: Batch 0041 - 0080 qua `tiki-proxy-worker-2` (Log: `logs/p2.log`)
+  - **Process 3**: Batch 0081 - 0120 qua `tiki-proxy-worker-3` (Log: `logs/p3.log`)
+  - **Process 4**: Batch 0121 - 0160 qua `tiki-proxy-worker-4` (Log: `logs/p4.log`)
+  - **Process 5**: Batch 0161 - 0200 qua `tiki-proxy-worker-5` (Log: `logs/p5.log`)
+
+#### 2. Dừng khẩn cấp toàn bộ 5 Process:
+```bash
+./stop_all.sh
+```
+
+#### 3. Cài đặt tự động chạy khi mở máy trên macOS (LaunchAgent Background Daemon):
+```bash
+# Cài đặt và kích hoạt tự khởi chạy khi đăng nhập/mở máy:
+bash scripts/setup_daemon.sh install
+
+# Xem trạng thái dịch vụ ngầm:
+bash scripts/setup_daemon.sh status
+
+# Tạm dừng hoặc khởi động lại:
+bash scripts/setup_daemon.sh stop
+bash scripts/setup_daemon.sh start
+
+# Gỡ bỏ hoàn toàn daemon:
+bash scripts/setup_daemon.sh uninstall
+```
+* **Đặc tính Daemon**:
+  - `RunAtLoad = true`: Mở máy hoặc đăng nhập là tự động chạy ngầm.
+  - `KeepAlive`: Tự khởi động lại nếu sập nguồn, mất WiFi đột ngột.
+  - Khi cào xong toàn bộ 200 batch (exit code 0), dịch vụ tự động kết thúc hoàn toàn.
+
+#### 4. Xem Dashboard giám sát thời gian thực:
+```bash
+python3 check_status.py
+```
+* Hiển thị bảng trạng thái chi tiết của 5 tiến trình: PID, CPU %, thời gian chạy, batch đang xử lý, và tổng tiến độ % trên toàn bộ 200,000 ID.
+
+#### 5. Tổng hợp dữ liệu từ các Batch Parts:
+```bash
+python3 merge_parts.py
+```
+* Tự động quét và hợp nhất toàn bộ các file part trong `data/output/concurrency/parts/`, loại bỏ trùng lặp bằng set và xuất ra 3 định dạng: `products_output.json`, `products_output.jsonl`, và `all_products.csv`.
+
+---
+
 ## 📊 6. Theo dõi tiến độ & Thống kê thời gian
 
 Khi chạy `fetch_tiki_products.py`, hệ thống tự động tính toán và lưu thời gian cào dữ liệu vào file `*.stats.json` (tích lũy qua mọi lần chạy/resume):
