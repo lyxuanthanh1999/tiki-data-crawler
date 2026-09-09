@@ -216,16 +216,111 @@ def wait_for_cooldown(
     max_retries: int,
 ) -> bool:
     """
-    Chờ cho đến khi hết cooldown WAF hoặc vượt quá max_retries.
-    Trả về True nếu cooldown đã hết, False nếu vượt quá max_retries hoặc bị ngắt.
+    Chờ WAF cooldown với Adaptive Stepped Backoff.
+
+    Giai đoạn 1 – Cooldown chính: Ngủ cho đến khi hết thời gian cooldown (thường 3600s).
+    Giai đoạn 2 – Adaptive check sau cooldown:
+      - Lần check 1-3: Interval ngắn (3-5 phút) để nhanh chóng phát hiện WAF đã clear.
+      - Sau 3 lần thất bại: Stepped backoff theo lịch cố định:
+          5 → 10 → 15 → 30 → 60 phút (giữ nguyên ở 60 phút mãi).
+      - Reset về interval ngắn mỗi lần WAF cooldown mới bắt đầu.
+
+    Trả về True nếu sẵn sàng chạy tiếp, False nếu vượt quá max_retries hoặc bị ngắt.
     """
-    waf_retries = 0
+    # Cấu hình Adaptive Backoff (tính bằng giây)
+    ADAPTIVE_SHORT_MIN = 3 * 60    # 3 phút - interval ngắn tối thiểu
+    ADAPTIVE_SHORT_MAX = 5 * 60    # 5 phút - interval ngắn tối đa
+    ADAPTIVE_LONG_MIN = 5 * 60     # 5 phút - interval dài tối thiểu (sau 3 lần thất bại)
+    ADAPTIVE_LONG_MAX = 60 * 60    # 60 phút - giới hạn trên tuyệt đối
+    # Lịch stepped backoff (giây): 5m → 10m → 15m → 30m → 60m (giữ nguyên)
+    BACKOFF_STEPS = [5 * 60, 10 * 60, 15 * 60, 30 * 60, 60 * 60]
+    SHORT_CHECK_LIMIT = 3          # Số lần check ngắn trước khi chuyển sang backoff dài
+
+    waf_retries = 0          # Tổng số lần thử cooldown (cross-cycle)
+    adaptive_check = 0       # Số lần check trong giai đoạn adaptive (reset mỗi cycle)
+    adaptive_interval = float(ADAPTIVE_SHORT_MIN)  # Interval hiện tại cho adaptive check
+
     while True:
         cooldown = store.global_wait_remaining()
+
+        # ─── Cooldown chính đã hết → vào giai đoạn adaptive check ───
         if cooldown <= 0:
-            logger.info("Batch #%04d: Cooldown WAF đã kết thúc! Sẵn sàng chạy tiếp.", batch_index)
-            return True
+            if adaptive_check == 0:
+                # Lần đầu cooldown kết thúc: báo hiệu và bắt đầu giai đoạn check nhanh
+                logger.info(
+                    "Batch #%04d: ⏱️ Cooldown WAF chính đã kết thúc! "
+                    "Bắt đầu kiểm tra adaptive (lần 1/%d với interval %.0fs)...",
+                    batch_index,
+                    SHORT_CHECK_LIMIT,
+                    adaptive_interval,
+                )
+                time.sleep(adaptive_interval)
+                adaptive_check += 1
+                continue  # Quay lại check cooldown
+
+            # Sau lần ngủ adaptive → check lại xem WAF đã thực sự clear chưa
+            cooldown_recheck = store.global_wait_remaining()
+            if cooldown_recheck <= 0:
+                # ✅ WAF đã clear → tiếp tục crawl
+                logger.info(
+                    "Batch #%04d: ✅ WAF đã clear sau %d lần kiểm tra adaptive! Sẵn sàng chạy tiếp.",
+                    batch_index,
+                    adaptive_check,
+                )
+                return True
+
+            # ❌ Vẫn còn WAF → tăng backoff
+            waf_retries += 1
+            if max_retries > 0 and waf_retries > max_retries:
+                logger.error(
+                    "Batch #%04d: Đã vượt quá số lần chờ WAF tối đa (%s lần). Dừng batch.",
+                    batch_index,
+                    max_retries,
+                )
+                return False
+
+            if adaptive_check <= SHORT_CHECK_LIMIT:
+                # Vẫn trong giai đoạn check ngắn (3-5 phút)
+                next_interval = ADAPTIVE_SHORT_MIN + (
+                    (ADAPTIVE_SHORT_MAX - ADAPTIVE_SHORT_MIN) * adaptive_check / SHORT_CHECK_LIMIT
+                )
+                logger.warning(
+                    "Batch #%04d: ⚠️ WAF vẫn active sau lần kiểm tra %d/%d. "
+                    "Tiếp tục check ngắn sau %.0fs (%.1f phút)... (WAF retry #%s)",
+                    batch_index,
+                    adaptive_check,
+                    SHORT_CHECK_LIMIT,
+                    next_interval,
+                    next_interval / 60,
+                    waf_retries if max_retries > 0 else f"{waf_retries}/∞",
+                )
+                adaptive_interval = next_interval
+            else:
+                # Chuyển sang stepped backoff: 5 → 10 → 15 → 30 → 60 phút (giữ 60 phút)
+                step_idx = min(adaptive_check - SHORT_CHECK_LIMIT - 1, len(BACKOFF_STEPS) - 1)
+                long_interval = BACKOFF_STEPS[step_idx]
+                logger.warning(
+                    "Batch #%04d: 🔴 WAF dai dẳng (check lần %d, bước %d/%d). "
+                    "Stepped Backoff: %.0fs (%.0f phút)... (WAF retry #%s)",
+                    batch_index,
+                    adaptive_check,
+                    step_idx + 1,
+                    len(BACKOFF_STEPS),
+                    long_interval,
+                    long_interval / 60,
+                    waf_retries if max_retries > 0 else f"{waf_retries}/∞",
+                )
+                adaptive_interval = long_interval
+
+            time.sleep(adaptive_interval)
+            adaptive_check += 1
+            continue
+
+        # ─── Cooldown chính vẫn còn → ngủ phần còn lại ───
         waf_retries += 1
+        adaptive_check = 0  # Reset adaptive check cho cycle cooldown mới
+        adaptive_interval = float(ADAPTIVE_SHORT_MIN)  # Reset interval về ngắn
+
         if max_retries > 0 and waf_retries > max_retries:
             logger.error(
                 "Batch #%04d: Đã vượt quá số lần chờ WAF tối đa (%s lần). Dừng batch.",
@@ -233,17 +328,20 @@ def wait_for_cooldown(
                 max_retries,
             )
             return False
+
+        # Ngủ đúng phần còn lại của cooldown chính
+        sleep_main = min(cooldown, max(5, int(auto_wait_interval)))
         logger.warning(
-            "Batch #%04d đang cooldown do WAF (còn %ss ~ %.1f phút). "
-            "Tiến trình đang ngủ, tự động kiểm tra lại sau %ss... (Lần %s/%s)",
+            "Batch #%04d: 🛡️ WAF Cooldown đang chạy (còn %ds ~ %.1f phút). "
+            "Ngủ %ds rồi kiểm tra lại... (Lần %s/%s)",
             batch_index,
             cooldown,
             cooldown / 60,
-            min(cooldown, max(5, int(auto_wait_interval))),
+            sleep_main,
             waf_retries,
             max_retries if max_retries > 0 else "∞",
         )
-        time.sleep(min(cooldown, max(5, int(auto_wait_interval))))
+        time.sleep(sleep_main)
 
 
 def main():
