@@ -363,8 +363,8 @@ def main():
     parser.add_argument(
         "--max-waf-retries",
         type=int,
-        default=10,
-        help="Số lần Auto-Wait tối đa cho một batch trước khi dừng (0 = không giới hạn, mặc định: 10)",
+        default=0,
+        help="Số lần Auto-Wait tối đa cho một batch trước khi dừng (0 = không giới hạn, mặc định: 0)",
     )
 
     args = parser.parse_args()

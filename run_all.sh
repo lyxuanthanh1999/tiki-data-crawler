@@ -63,7 +63,7 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # 3. Định nghĩa các cấu hình tương ứng 5 batch trong PyCharm
-COMMON_ARGS="--output-dir data/output/concurrency/parts --batch-size 1000 --concurrency 10 --delay-min 1.0 --delay-max 2.5 --auto-wait"
+COMMON_ARGS="--output-dir data/output/concurrency/parts --batch-size 1000 --concurrency 10 --delay-min 1.0 --delay-max 2.5 --auto-wait --max-waf-retries 0 --auto-wait-interval 60"
 
 echo "🚀 Đang khởi động 5 tiến trình cào song song..."
 
