@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+import sys, os; sys.path.insert(0, os.path.dirname(__file__))
 from cleaner import extract_product_fields
 from config import (
     BATCH_SIZE,

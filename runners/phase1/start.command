@@ -7,4 +7,4 @@
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR" || exit 1
 
-./run_all.sh
+./runners/phase1/run.sh

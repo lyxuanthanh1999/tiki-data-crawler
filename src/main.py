@@ -9,6 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 from config import (
     BATCH_SIZE,
     DEFAULT_CONCURRENCY,

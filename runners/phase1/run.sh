@@ -68,7 +68,7 @@ COMMON_ARGS="--output-dir data/output/concurrency/parts --batch-size 1000 --conc
 echo "🚀 Đang khởi động 5 tiến trình cào song song..."
 
 # Process 1: Batch 1 -> 40
-$PYTHON_BIN main.py $COMMON_ARGS --start-batch 1 --end-batch 40 \
+$PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 1 --end-batch 40 \
     --worker-url https://tiki-proxy-worker-1.tyanh185.workers.dev \
     >> "$LOGS_DIR/p1.log" 2>&1 &
 P1=$!
@@ -76,7 +76,7 @@ echo "$P1" >> "$PID_FILE"
 echo "  🔹 [Process 1] PID: $P1 | Batches: 0001-0040 | Worker 1 -> logs/p1.log"
 
 # Process 2: Batch 41 -> 80
-$PYTHON_BIN main.py $COMMON_ARGS --start-batch 41 --end-batch 80 \
+$PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 41 --end-batch 80 \
     --worker-url https://tiki-proxy-worker-2.tyanh185.workers.dev \
     >> "$LOGS_DIR/p2.log" 2>&1 &
 P2=$!
@@ -84,7 +84,7 @@ echo "$P2" >> "$PID_FILE"
 echo "  🔹 [Process 2] PID: $P2 | Batches: 0041-0080 | Worker 2 -> logs/p2.log"
 
 # Process 3: Batch 81 -> 120
-$PYTHON_BIN main.py $COMMON_ARGS --start-batch 81 --end-batch 120 \
+$PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 81 --end-batch 120 \
     --worker-url https://tiki-proxy-worker-3.tyanh185.workers.dev \
     >> "$LOGS_DIR/p3.log" 2>&1 &
 P3=$!
@@ -92,7 +92,7 @@ echo "$P3" >> "$PID_FILE"
 echo "  🔹 [Process 3] PID: $P3 | Batches: 0081-0120 | Worker 3 -> logs/p3.log"
 
 # Process 4: Batch 121 -> 160
-$PYTHON_BIN main.py $COMMON_ARGS --start-batch 121 --end-batch 160 \
+$PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 121 --end-batch 160 \
     --worker-url https://tiki-proxy-worker-4.tyanh185.workers.dev \
     >> "$LOGS_DIR/p4.log" 2>&1 &
 P4=$!
@@ -100,7 +100,7 @@ echo "$P4" >> "$PID_FILE"
 echo "  🔹 [Process 4] PID: $P4 | Batches: 0121-0160 | Worker 4 -> logs/p4.log"
 
 # Process 5: Batch 161 -> 200
-$PYTHON_BIN main.py $COMMON_ARGS --start-batch 161 --end-batch 200 \
+$PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 161 --end-batch 200 \
     --worker-url https://tiki-proxy-worker-5.tyanh185.workers.dev \
     >> "$LOGS_DIR/p5.log" 2>&1 &
 P5=$!
@@ -110,7 +110,7 @@ echo "  🔹 [Process 5] PID: $P5 | Batches: 0161-0200 | Worker 5 -> logs/p5.log
 echo "======================================================================"
 echo "✅ Cả 5 tiến trình đã chạy ngầm thành công!"
 echo "📊 Theo dõi log thời gian thực: tail -f logs/p1.log logs/p2.log logs/p3.log logs/p4.log logs/p5.log"
-echo "🛑 Dừng toàn bộ tiến trình: ./stop_all.sh"
+echo "🛑 Dừng toàn bộ tiến trình: ./runners/phase1/stop.sh"
 echo "======================================================================"
 
 # 4. Chờ cả 5 tiến trình hoàn thành
