@@ -12,7 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 PARTS_DIR = PROJECT_DIR / "data/output/concurrency/parts"
 
 PROCESS_CONFIGS = [

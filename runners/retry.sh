@@ -31,11 +31,11 @@ CONCURRENCY=6
 DELAY_MIN=1.2
 DELAY_MAX=2.2
 WORKER_URLS=(
-    "https://tiki-proxy-worker-1.lyxuanthanh1999.workers.dev"
-    "https://tiki-proxy-worker-2.lyxuanthanh1999.workers.dev"
-    "https://tiki-proxy-worker-3.lyxuanthanh1999.workers.dev"
-    "https://tiki-proxy-worker-4.lyxuanthanh1999.workers.dev"
-    "https://tiki-proxy-worker-5.lyxuanthanh1999.workers.dev"
+    "https://tiki-proxy-worker.tyanh185.workers.dev"
+    "https://tiki-proxy-worker-2.tyanh185.workers.dev"
+    "https://tiki-proxy-worker-3.tyanh185.workers.dev"
+    "https://tiki-proxy-worker-4.tyanh185.workers.dev"
+    "https://tiki-proxy-worker-5.tyanh185.workers.dev"
 )
 
 # ── Parse args ────────────────────────────────────────────────────────────────

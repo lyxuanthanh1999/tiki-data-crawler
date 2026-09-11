@@ -75,35 +75,35 @@ echo "🚀 Đang khởi động 5 tiến trình Phase 4 song song..."
 
 # Worker 1: Batch 001-016
 $PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 1 --end-batch 16 \
-    --worker-url https://tiki-proxy-worker-1.lyxuanthanh1999.workers.dev \
+    --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
     >> "$LOGS_DIR/retry_p4_1.log" 2>&1 &
 P1=$!; echo "$P1" >> "$PID_FILE"
 echo "  🔹 [Process 1] PID: $P1 | Batches: 0001-0016 | Worker 1 -> logs/retry_p4_1.log"
 
 # Worker 2: Batch 017-032
 $PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 17 --end-batch 32 \
-    --worker-url https://tiki-proxy-worker-2.lyxuanthanh1999.workers.dev \
+    --worker-url https://tiki-proxy-worker-2.tyanh185.workers.dev \
     >> "$LOGS_DIR/retry_p4_2.log" 2>&1 &
 P2=$!; echo "$P2" >> "$PID_FILE"
 echo "  🔹 [Process 2] PID: $P2 | Batches: 0017-0032 | Worker 2 -> logs/retry_p4_2.log"
 
 # Worker 3: Batch 033-048
 $PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 33 --end-batch 48 \
-    --worker-url https://tiki-proxy-worker-3.lyxuanthanh1999.workers.dev \
+    --worker-url https://tiki-proxy-worker-3.tyanh185.workers.dev \
     >> "$LOGS_DIR/retry_p4_3.log" 2>&1 &
 P3=$!; echo "$P3" >> "$PID_FILE"
 echo "  🔹 [Process 3] PID: $P3 | Batches: 0033-0048 | Worker 3 -> logs/retry_p4_3.log"
 
 # Worker 4: Batch 049-064
 $PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 49 --end-batch 64 \
-    --worker-url https://tiki-proxy-worker-4.lyxuanthanh1999.workers.dev \
+    --worker-url https://tiki-proxy-worker-4.tyanh185.workers.dev \
     >> "$LOGS_DIR/retry_p4_4.log" 2>&1 &
 P4=$!; echo "$P4" >> "$PID_FILE"
 echo "  🔹 [Process 4] PID: $P4 | Batches: 0049-0064 | Worker 4 -> logs/retry_p4_4.log"
 
 # Worker 5: Batch 065-076
 $PYTHON_BIN src/main.py $COMMON_ARGS --start-batch 65 --end-batch 76 \
-    --worker-url https://tiki-proxy-worker-5.lyxuanthanh1999.workers.dev \
+    --worker-url https://tiki-proxy-worker-5.tyanh185.workers.dev \
     >> "$LOGS_DIR/retry_p4_5.log" 2>&1 &
 P5=$!; echo "$P5" >> "$PID_FILE"
 echo "  🔹 [Process 5] PID: $P5 | Batches: 0065-0076 | Worker 5 -> logs/retry_p4_5.log"
