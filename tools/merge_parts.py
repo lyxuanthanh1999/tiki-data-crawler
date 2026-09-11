@@ -21,6 +21,7 @@ DEFAULT_PARTS_DIRS = [
     Path("data/output/concurrency/parts"),
     Path("data/output/retry_pass2/parts"),
     Path("data/output/retry_pass3/parts"),
+    Path("data/output/retry_pass4/parts"),
 ]
 DEFAULT_INPUT_FILE = Path("data/input/product_ids.txt")
 DEFAULT_OUTPUT_JSON = Path("data/output/concurrency/products_output.json")
