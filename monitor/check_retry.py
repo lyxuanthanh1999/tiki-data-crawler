@@ -66,23 +66,41 @@ def get_batch_stats(parts_dir: Path, start_b: int, end_b: int) -> dict:
         fail_file = parts_dir / f"products_part_{b:04d}.failed_permanent.json"
         jsonl_file = parts_dir / f"products_part_{b:04d}.jsonl"
 
-        if stat_file.exists():
+        # Đếm sản phẩm vớt được (saved/rescued)
+        if prog_file.exists():
             try:
-                s = json.loads(stat_file.read_text())
-                total_ids += s.get("total", 0)
-                rescued += s.get("saved", 0)
-                confirmed_404 += s.get("failed_permanent", 0)
+                rescued += sum(1 for line in prog_file.read_text().splitlines() if line.strip().isdigit())
             except Exception:
                 pass
-        elif prog_file.exists():
-            total_ids += sum(1 for _ in prog_file.read_text().splitlines() if _.strip())
-        
-        # Track thời gian ghi file gần nhất
-        for f in [jsonl_file, stat_file]:
-            if f.exists():
-                mtime = f.stat().st_mtime
-                if last_write is None or mtime > last_write:
-                    last_write = mtime
+            mtime = prog_file.stat().st_mtime
+            if last_write is None or mtime > last_write:
+                last_write = mtime
+        elif jsonl_file.exists():
+            try:
+                rescued += sum(1 for line in jsonl_file.read_text().splitlines() if line.strip())
+            except Exception:
+                pass
+            mtime = jsonl_file.stat().st_mtime
+            if last_write is None or mtime > last_write:
+                last_write = mtime
+
+        # Đếm sản phẩm xác nhận 404
+        if fail_file.exists():
+            try:
+                data = json.loads(fail_file.read_text())
+                confirmed_404 += len(data)
+            except Exception:
+                pass
+            mtime = fail_file.stat().st_mtime
+            if last_write is None or mtime > last_write:
+                last_write = mtime
+
+        if stat_file.exists():
+            mtime = stat_file.stat().st_mtime
+            if last_write is None or mtime > last_write:
+                last_write = mtime
+
+    total_ids = rescued + confirmed_404
 
     completed_batches = sum(
         1 for b in range(start_b, end_b + 1)

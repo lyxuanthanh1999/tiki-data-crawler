@@ -48,59 +48,49 @@ def get_process_info(pid):
 
 
 def get_batch_stats(start_b, end_b):
-    total, rescued, fails, last_write = 0, 0, 0, None
+    rescued, fails, last_write = 0, 0, None
     for b in range(start_b, end_b + 1):
         sf = PARTS_DIR / f"products_part_{b:04d}.stats.json"
         pf = PARTS_DIR / f"products_part_{b:04d}.progress.txt"
         jf = PARTS_DIR / f"products_part_{b:04d}.jsonl"
         ff = PARTS_DIR / f"products_part_{b:04d}.failed_permanent.json"
 
-        if sf.exists():
+        # Đếm sản phẩm vớt được (saved/rescued)
+        if pf.exists():
             try:
-                s = json.loads(sf.read_text())
-                rescued += s.get("saved", 0)
-                fails += s.get("failed_permanent", 0)
+                with open(pf, "r", encoding="utf-8") as f:
+                    rescued += sum(1 for line in f if line.strip().isdigit())
             except Exception:
                 pass
+            mtime = pf.stat().st_mtime
+            if last_write is None or mtime > last_write:
+                last_write = mtime
+        elif jf.exists():
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    rescued += sum(1 for line in f if line.strip())
+            except Exception:
+                pass
+            mtime = jf.stat().st_mtime
+            if last_write is None or mtime > last_write:
+                last_write = mtime
+
+        # Đếm sản phẩm xác nhận 404
+        if ff.exists():
+            try:
+                with open(ff, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    fails += len(data)
+            except Exception:
+                pass
+            mtime = ff.stat().st_mtime
+            if last_write is None or mtime > last_write:
+                last_write = mtime
+
+        if sf.exists():
             mtime = sf.stat().st_mtime
             if last_write is None or mtime > last_write:
                 last_write = mtime
-        else:
-            # Đang cào dở (real-time)
-            b_rescued = 0
-            if pf.exists():
-                try:
-                    with open(pf, "r", encoding="utf-8") as f:
-                        b_rescued = sum(1 for line in f if line.strip().isdigit())
-                except Exception:
-                    pass
-                mtime = pf.stat().st_mtime
-                if last_write is None or mtime > last_write:
-                    last_write = mtime
-            elif jf.exists():
-                try:
-                    with open(jf, "r", encoding="utf-8") as f:
-                        b_rescued = sum(1 for line in f if line.strip())
-                except Exception:
-                    pass
-                mtime = jf.stat().st_mtime
-                if last_write is None or mtime > last_write:
-                    last_write = mtime
-
-            b_fails = 0
-            if ff.exists():
-                try:
-                    with open(ff, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        b_fails = len(data)
-                except Exception:
-                    pass
-                mtime = ff.stat().st_mtime
-                if last_write is None or mtime > last_write:
-                    last_write = mtime
-
-            rescued += b_rescued
-            fails += b_fails
 
     completed = sum(1 for b in range(start_b, end_b + 1)
                     if (PARTS_DIR / f"products_part_{b:04d}.stats.json").exists())
