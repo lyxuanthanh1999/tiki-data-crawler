@@ -2,74 +2,82 @@
 
 Hệ thống crawl và chuẩn hóa dữ liệu lớn cho **200,000 sản phẩm** từ Tiki API (`https://api.tiki.vn/product-detail/api/v1/products/{id}`). Hệ thống được thiết kế với kiến trúc chịu lỗi (fault-tolerant), tối ưu hóa hiệu năng cao bằng lập trình bất đồng bộ (`asyncio` + `aiohttp`), tích hợp cơ chế chống thất thoát dữ liệu đa tầng (Durable Append, Atomic Writes, Multi-layer Checkpointing) và cơ chế vượt qua các lớp bảo vệ chống scraping (BytePlus WAF / Rate Limiter).
 
+Dự án đã hoàn tất **100% (200,000 / 200,000 ID)** qua 4 Phase quét vét Dead Letter Queue (DLQ), thu thập thành công **124,299 sản phẩm sạch (62.15%)** và xác nhận chính xác **75,701 lỗi vĩnh viễn True 404 (37.85%)**.
+
 ---
 
 ## 📑 Mục Lục
-1. [Cấu trúc thư mục dự án](#1-cấu-trúc-thư-mục-dự-án)
-2. [Kiến trúc & Sơ đồ luồng hệ thống (System Architecture & Pipeline Flow)](#2-kiến-trúc--sơ-đồ-luồng-hệ-thống-system-architecture--pipeline-flow)
+1. [Cấu trúc thư mục dự án (Modular Architecture)](#1-cấu-trúc-thư-mục-dự-án-modular-architecture)
+2. [Kiến trúc & Sơ đồ luồng hệ thống End-to-End (4-Phase Pipeline)](#2-kiến-trúc--sơ-đồ-luồng-hệ-thống-end-to-end-4-phase-pipeline)
 3. [Quy chuẩn dữ liệu đầu ra & Làm sạch HTML](#3-quy-chuẩn-dữ-liệu-đầu-ra--làm-sạch-html)
-4. [Bảng phân loại & Xử lý các trường hợp lỗi](#4-bảng-phân-loại--xử-lý-các-trường-hợp-lỗi)
+4. [Bảng phân loại & Xử lý các trường hợp lỗi & WAF Cooldown](#4-bảng-phân-loại--xử-lý-các-trường-hợp-lỗi)
    - [Cơ chế WAF Adaptive Stepped Backoff (Tối ưu hóa thời gian quét lại)](#-cơ-chế-waf-adaptive-stepped-backoff-tối-ưu-hóa-thời-gian-quét-lại)
 5. [Hướng dẫn cài đặt & Cách chạy Source Code](#5-hướng-dẫn-cài-đặt--cách-chạy-source-code)
-   - [Bước 5: Chạy Tự vận hành Không chạm Phase 1 (200k ID)](#bước-5-chạy-tự-vận-hành-không-chạm-zero-touch-unattended-automation)
-   - [Bước 6: Phase 2 - Quét vét 94,307 ID lỗi (Dead Letter Queue)](#bước-6-phase-2-quét-vét-94307-id-lỗi-dead-letter-queue-re-crawl)
-6. [Theo dõi tiến độ & Thống kê thời gian](#6-theo-dõi-tiến-độ--thống-kê-thời-gian)
+   - [Bước 5: Chạy Phase 1 - Cào chính 200,000 ID](#bước-5-chạy-phase-1---cào-chính-200000-id)
+   - [Bước 6: Chiến lược Quét vét lỗi đa tầng (Phase 2 -> 3 -> 4) & Generic Runner](#bước-6-chiến-lược-quét-vét-lỗi-đa-tầng-phase-2---3---4--generic-runner)
+   - [Bước 7: Hợp nhất Toàn diện (Master Merge & Deduplication)](#bước-7-hợp-nhất-toàn-diện-master-merge--deduplication)
+   - [Bước 8: Chạy ngầm tự động qua macOS LaunchAgent Daemon](#bước-8-chạy-ngầm-tự-động-qua-macos-launchagent-daemon)
+6. [Báo cáo kết quả & Thống kê thời gian cào chi tiết](#6-báo-cáo-kết-quả--thống-kê-thời-gian-cào-chi-tiết)
 7. [Xử lý sự cố (Troubleshooting)](#7-xử-lý-sự-cố-troubleshooting)
 8. [Chạy Unit Test](#8-chạy-unit-test)
 
 ---
 
-## 📁 1. Cấu trúc thư mục dự án
+## 📁 1. Cấu trúc thư mục dự án (Modular Architecture)
+
+Codebase được tái cấu trúc theo mô hình phân tầng module rõ ràng:
 
 ```
 Project_2/
-├── fetch_tiki_products.py            # Engine cào Concurrency (Checkpoint 5 lớp, Retry Queue, Dynamic Cooldown)
-├── fetch_tiki_products_sequential.py # Engine cào Tuần tự (Sequential) phục vụ test & debug chi tiết
-├── main.py                           # CLI Entry point cào theo batch (hỗ trợ Adaptive Stepped Backoff)
-├── crawler.py                        # Batch streaming crawler engine
-├── cleaner.py                        # Module chuẩn hoá description & bóc tách cấu trúc HTML
-├── config.py                         # File cấu hình tập trung (URL, Headers, Timeouts, Paths)
-├── requirements.txt                  # Danh sách thư viện phụ thuộc (aiohttp, pytest, ...)
-├── README.md                         # Tài liệu hướng dẫn toàn diện của dự án
-├── run_all.sh                        # Script chạy 5 tiến trình ngầm cho Phase 1 (200k ID)
-├── stop_all.sh                       # Script dừng khẩn cấp 5 tiến trình Phase 1
-├── check_status.py                   # Dashboard theo dõi tiến độ Phase 1 thời gian thực
-├── merge_parts.py                    # Script hợp nhất các file batch parts thành JSON, JSONL, CSV
-├── run_retry_pass2.sh                # Script chạy 5 tiến trình ngầm cho Phase 2 (quét vét 94k ID lỗi)
-├── stop_retry_pass2.sh               # Script dừng khẩn cấp 5 tiến trình Phase 2
-├── check_retry_status.py             # Dashboard theo dõi tiến độ & sản phẩm vớt được của Phase 2
-├── reconcile_pass2.py                # Script đối chiếu & hợp nhất sản phẩm vớt được từ Phase 2 vào bộ dữ liệu chính
-├── scripts/
-│   ├── setup_daemon.sh               # Cài đặt macOS LaunchAgent tự cào ngầm khi khởi động máy
-│   └── extract_failed_ids.py         # Trích xuất danh sách ID lỗi 404 sang failed_ids_pass2.txt
+├── src/                              # Mã nguồn Python chính (Core Engine)
+│   ├── main.py                       # CLI Entry point cào theo batch (hỗ trợ Adaptive Stepped Backoff)
+│   ├── fetch_tiki_products.py        # Engine cào Concurrency (Checkpoint 5 lớp, Retry Queue, Dynamic Cooldown)
+│   ├── crawler.py                    # Batch streaming crawler engine
+│   ├── cleaner.py                    # Module chuẩn hoá description & bóc tách cấu trúc HTML
+│   └── config.py                     # File cấu hình tập trung (URL, Headers, Timeouts, Paths)
+├── tools/                            # Công cụ tiện ích & xử lý dữ liệu tổng hợp
+│   ├── merge_parts.py                # Master Merge: Tự động phát hiện dynamic parts mọi Phase, khử trùng & xuất data
+│   ├── extract_failed_ids.py         # Trích xuất danh sách ID lỗi Phase 1 -> failed_ids_pass2.txt
+│   └── extract_failed_ids_pass3.py   # Trích xuất danh sách ID lỗi Phase 2 -> failed_ids_pass3.txt
+├── monitor/                          # Bộ Dashboard giám sát thời gian thực
+│   ├── check_retry.py                # Dashboard tổng quát (nhận tham số --name passX, --watch)
+│   ├── check_status.py               # Dashboard giám sát Phase 1
+│   ├── check_retry_pass1_status.py   # Wrapper dashboard Phase 1
+│   ├── check_retry_pass2_status.py   # Dashboard giám sát Phase 2
+│   ├── check_retry_pass3_status.py   # Dashboard giám sát Phase 3
+│   └── check_retry_pass4_status.py   # Dashboard giám sát Phase 4
+├── runners/                          # Bộ script điều phối thực thi 5 Process song song
+│   ├── retry.sh                      # Generic Retry Runner chạy bất kỳ Phase nào
+│   ├── stop_retry.sh                 # Generic Stop Runner dừng tiến trình an toàn
+│   ├── phase1/                       # Điều phối Phase 1 (200k ID): run.sh, stop.sh, start.command
+│   ├── phase2/                       # Điều phối Phase 2 (94k ID): run.sh, stop.sh, start.command
+│   ├── phase3/                       # Điều phối Phase 3 (84k ID): run.sh, stop.sh, start.command
+│   └── phase4/                       # Điều phối Phase 4 (76k ID): run.sh, stop.sh, start.command
+├── scripts/                          # Script cấu hình hệ thống
+│   └── setup_retry_daemon.sh         # Cài đặt macOS LaunchAgent Daemon tự chạy ngầm khi mở máy
 ├── tests/                            # Bộ kiểm thử đơn vị tự động (Unit Tests)
 │   ├── test_crawler.py
 │   └── test_fetch_tiki_products.py
-└── data/
-    ├── input/                        # Danh sách product_id đầu vào
-    │   ├── product_ids.txt           # Danh sách đầy đủ 200,000 ID
-    │   ├── product_ids_10.txt        # Tập ID mẫu 10 sản phẩm
-    │   ├── product_ids_50.txt        # Tập ID mẫu 50 sản phẩm
-    │   └── failed_ids_pass2.txt      # 94,307 ID lỗi trích xuất cho Phase 2
-    └── output/
-        ├── concurrency/              # Kết quả xuất ra từ Phase 1
-        │   ├── parts/                # Các file batch (1,000 items/file)
-        │   ├── products_output.json               # Dữ liệu JSON hoàn chỉnh (Atomic Write)
-        │   ├── products_output.jsonl              # Stream ghi từng dòng (Durable Append)
-        │   ├── products_output.progress.txt       # Danh sách ID đã cào thành công
-        │   ├── products_output.retry.json         # Trạng thái hàng đợi retry & global cooldown
-        │   ├── products_output.failed_permanent.json # Danh sách ID lỗi vĩnh viễn (404, format sai, hết retry)
-        │   └── products_output.stats.json         # Thống kê tổng thời gian chạy, tốc độ trung bình
-        ├── retry_pass2/              # Kết quả quét vét Phase 2 (Tách biệt hoàn toàn để bảo vệ Phase 1)
-        │   └── parts/                # 95 file batch quét lại (products_part_0001.json -> 0095.json)
-        └── sequential/               # Kết quả xuất ra từ fetch_tiki_products_sequential.py
+├── data/
+│   ├── input/                        # Danh sách ID đầu vào
+│   │   ├── product_ids.txt           # 200,000 ID gốc ban đầu
+│   │   ├── failed_ids_pass2.txt      # 94,307 ID lỗi trích xuất cho Phase 2
+│   │   ├── failed_ids_pass3.txt      # 83,804 ID lỗi trích xuất cho Phase 3
+│   │   └── failed_ids_pass4.txt      # 75,701 ID lỗi trích xuất cho Phase 4
+│   └── output/                       # Thư mục lưu trữ kết quả độc lập từng Phase
+│       ├── concurrency/              # Kết quả Phase 1 (parts/ 200 files + products_output.*)
+│       ├── retry_pass2/              # Kết quả Phase 2 (parts/ 95 files)
+│       ├── retry_pass3/              # Kết quả Phase 3 (parts/ 84 files)
+│       ├── retry_pass4/              # Kết quả Phase 4 (parts/ 76 files)
+│       └── all_products.csv          # File CSV tổng hợp toàn bộ 124,299 sản phẩm sạch
+└── logs/                             # File log và PID của các tiến trình ngầm
 ```
 
 ---
 
-## 🏗️ 2. Kiến trúc & Sơ đồ luồng hệ thống (System Architecture & Pipeline Flow)
+## 🏗️ 2. Kiến trúc & Sơ đồ luồng hệ thống End-to-End (4-Phase Pipeline)
 
-### 📊 Sơ đồ Tổng thể Pipeline (End-to-End Architecture)
+### 📊 Sơ đồ Tổng thể Pipeline
 
 ```mermaid
 flowchart TD
@@ -77,125 +85,76 @@ flowchart TD
         IDS["data/input/product_ids.txt<br/>(200,000 Product IDs)"]
     end
 
-    subgraph PHASE1 ["🚀 Phase 1: 5 Tiến trình Cào chính (run_all.sh)"]
-        direction TB
-        P1["Process 1: Batch 001-040<br/>(CF Worker 1)"]
-        P2["Process 2: Batch 041-080<br/>(CF Worker 2)"]
-        P3["Process 3: Batch 081-120<br/>(CF Worker 3)"]
-        P4["Process 4: Batch 121-160<br/>(CF Worker 4)"]
-        P5["Process 5: Batch 161-200<br/>(CF Worker 5)"]
+    subgraph PROXIES ["🛡️ 5 Cloudflare Worker Edge Proxies"]
+        CF1["Worker Proxy 1"]
+        CF2["Worker Proxy 2"]
+        CF3["Worker Proxy 3"]
+        CF4["Worker Proxy 4"]
+        CF5["Worker Proxy 5"]
     end
 
-    subgraph PROXIES ["🛡️ Cloudflare Worker Edge Proxies"]
-        CF1["tiki-proxy-worker-1"]
-        CF2["tiki-proxy-worker-2"]
-        CF3["tiki-proxy-worker-3"]
-        CF4["tiki-proxy-worker-4"]
-        CF5["tiki-proxy-worker-5"]
+    subgraph PHASE1 ["🚀 Phase 1: Cào Chính 200k ID (runners/phase1/run.sh)"]
+        P1["Process 1: Batch 001-040"]
+        P2["Process 2: Batch 041-080"]
+        P3["Process 3: Batch 081-120"]
+        P4["Process 4: Batch 121-160"]
+        P5["Process 5: Batch 161-200"]
+        RES_P1["Kết quả Phase 1:<br/>✅ 105,693 sạch | ❌ 94,307 lỗi tạm"]
     end
 
-    subgraph TARGET ["🎯 Mục tiêu"]
-        TIKI["Tiki Product API<br/>(/api/v1/products/{id})"]
+    subgraph PHASE2 ["🔄 Phase 2: Quét Vét DLQ Lần 1 (runners/phase2/run.sh)"]
+        F2_IN["data/input/failed_ids_pass2.txt<br/>(94,307 IDs)"]
+        RP2["5 Processes song song (95 Batches)"]
+        RES_P2["Kết quả Phase 2:<br/>🌟 +10,503 sạch | ❌ 83,804 lỗi"]
     end
 
-    subgraph STORAGE_P1 ["💾 Lưu trữ Bền vững Phase 1 (data/output/concurrency/)"]
-        PARTS_P1["parts/products_part_0001..0200.json<br/>(Atomic Write 1,000 items/file)"]
-        JSONL["products_output.jsonl (Durable Append)"]
-        PROG["products_output.progress.txt (Fast Resume)"]
-        RETRY["products_output.retry.json (Retry Queue)"]
-        FAILED["products_output.failed_permanent.json<br/>(94,307 HTTP 404 IDs)"]
+    subgraph PHASE3 ["🔄 Phase 3: Quét Vét DLQ Lần 2 (runners/phase3/run.sh)"]
+        F3_IN["data/input/failed_ids_pass3.txt<br/>(83,804 IDs)"]
+        RP3["5 Processes song song (84 Batches)"]
+        RES_P3["Kết quả Phase 3:<br/>🌟 +8,103 sạch | ❌ 75,701 lỗi"]
     end
 
-    subgraph PHASE2 ["🔄 Phase 2: Quét vét Dead Letter Queue (run_retry_pass2.sh)"]
-        EXTRACT["scripts/extract_failed_ids.py"]
-        FAILED_TXT["data/input/failed_ids_pass2.txt<br/>(94,307 IDs)"]
-        RP1["Process 1: Batch 01-19 (Worker 1)"]
-        RP2["Process 2: Batch 20-38 (Worker 2)"]
-        RP3["Process 3: Batch 39-57 (Worker 3)"]
-        RP4["Process 4: Batch 58-76 (Worker 4)"]
-        RP5["Process 5: Batch 77-95 (Worker 5)"]
-        PARTS_P2["data/output/retry_pass2/parts/<br/>(products_part_0001..0095.json)"]
+    subgraph PHASE4 ["🔄 Phase 4: Quét Vét DLQ Lần 3 (runners/phase4/run.sh)"]
+        F4_IN["data/input/failed_ids_pass4.txt<br/>(75,701 IDs)"]
+        RP4["5 Processes song song (76 Batches)"]
+        RES_P4["Kết quả Phase 4:<br/>🌟 +0 sạch | ❌ 75,701 True 404"]
     end
 
-    subgraph RECONCILE ["✨ Hợp nhất Kết quả Cuối cùng"]
-        REC_SCRIPT["reconcile_pass2.py & merge_parts.py"]
-        FINAL_JSON["products_output.json"]
-        FINAL_CSV["all_products.csv"]
+    subgraph MASTER_MERGE ["✨ Master Merge & Deduplication (tools/merge_parts.py)"]
+        MERGER["Tự động phát hiện dynamic parts folders<br/>Khử trùng lặp ID cross-phase<br/>Đồng bộ danh sách 404 thực tế"]
+        FINAL_JSON["products_output.json (313.1 MB)"]
+        FINAL_CSV["all_products.csv (292.0 MB)"]
         FINAL_JSONL["products_output.jsonl"]
+        FINAL_404["products_output.failed_permanent.json"]
     end
 
     IDS --> P1 & P2 & P3 & P4 & P5
-    P1 --> CF1
-    P2 --> CF2
-    P3 --> CF3
-    P4 --> CF4
-    P5 --> CF5
-    CF1 & CF2 & CF3 & CF4 & CF5 --> TIKI
+    P1 & P2 & P3 & P4 & P5 --> CF1 & CF2 & CF3 & CF4 & CF5
+    CF1 & CF2 & CF3 & CF4 & CF5 --> RES_P1
 
-    P1 & P2 & P3 & P4 & P5 --> PARTS_P1 & JSONL & PROG & RETRY & FAILED
+    RES_P1 -->|Trích xuất 94,307 lỗi| F2_IN
+    F2_IN --> RP2 --> RES_P2
 
-    FAILED --> EXTRACT --> FAILED_TXT
-    FAILED_TXT --> RP1 & RP2 & RP3 & RP4 & RP5
-    RP1 & RP2 & RP3 & RP4 & RP5 --> PARTS_P2
+    RES_P2 -->|Trích xuất 83,804 lỗi| F3_IN
+    F3_IN --> RP3 --> RES_P3
 
-    PARTS_P1 & PARTS_P2 --> REC_SCRIPT
-    REC_SCRIPT --> FINAL_JSON & FINAL_CSV & FINAL_JSONL
-```
+    RES_P3 -->|Trích xuất 75,701 lỗi| F4_IN
+    F4_IN --> RP4 --> RES_P4
 
----
-
-### 🛡️ Sơ đồ Chu kỳ Xử lý WAF & Adaptive Stepped Backoff
-
-```mermaid
-stateDiagram-v2
-    [*] --> Crawling: Gửi HTTP Request
-    Crawling --> Success200: HTTP 200 JSON hợp lệ
-    Success200 --> SaveData: Ghi Checkpoint & Lưu Data
-    SaveData --> Crawling: Next Product ID
-
-    Crawling --> WAF_Detected: BytePlus WAF Challenge (HTML/Captcha)
-    
-    state "Giai đoạn 1: Cooldown chính" as Phase1_Cooldown {
-        WAF_Detected --> MainSleep: Bật _global cooldown = 3,600s
-        MainSleep --> Countdown60s: Ngủ ngắt quãng 60s/lần
-        Countdown60s --> CooldownExpired: Hết 3,600s (cooldown <= 0)
-    }
-
-    state "Giai đoạn 2: Adaptive Stepped Backoff" as Phase2_Backoff {
-        CooldownExpired --> ShortCheck1: Check lần 1 (Chờ 3 phút)
-        ShortCheck1 --> ShortCheck2: Vẫn WAF? Check lần 2 (Chờ 4 phút)
-        ShortCheck2 --> ShortCheck3: Vẫn WAF? Check lần 3 (Chờ 5 phút)
-        
-        ShortCheck3 --> Step1_5m: Vẫn WAF? Chuyển Stepped Backoff (Bước 1: 5 phút)
-        Step1_5m --> Step2_10m: Vẫn WAF? (Bước 2: 10 phút)
-        Step2_10m --> Step3_15m: Vẫn WAF? (Bước 3: 15 phút)
-        Step3_15m --> Step4_30m: Vẫn WAF? (Bước 4: 30 phút)
-        Step4_30m --> Step5_60m: Vẫn WAF? (Bước 5+: Cố định 60 phút)
-        Step5_60m --> Step5_60m: Lặp lại mỗi 60 phút cho đến khi thông
-    }
-
-    ShortCheck1 --> ResetAndResume: WAF Đã Clear (HTTP OK)
-    ShortCheck2 --> ResetAndResume: WAF Đã Clear (HTTP OK)
-    ShortCheck3 --> ResetAndResume: WAF Đã Clear (HTTP OK)
-    Step1_5m --> ResetAndResume: WAF Đã Clear (HTTP OK)
-    Step2_10m --> ResetAndResume: WAF Đã Clear (HTTP OK)
-    Step3_15m --> ResetAndResume: WAF Đã Clear (HTTP OK)
-    Step4_30m --> ResetAndResume: WAF Đã Clear (HTTP OK)
-    Step5_60m --> ResetAndResume: WAF Đã Clear (HTTP OK)
-
-    ResetAndResume --> Crawling: Reset bộ đếm về 3 phút & Tiếp tục cào
+    RES_P1 & RES_P2 & RES_P3 & RES_P4 --> MERGER
+    MERGER --> FINAL_JSON & FINAL_CSV & FINAL_JSONL & FINAL_404
 ```
 
 ---
 
 ### Các Engine cào dữ liệu:
 
-Hệ thống cung cấp **3 chế độ thực thi** phù hợp với từng nhu cầu:
+Hệ thống cung cấp **2 chế độ thực thi chính**:
 
-#### 1. Concurrency Engine (`fetch_tiki_products.py`) - Khuyến nghị cho Production
+#### 1. Concurrency Engine (`src/fetch_tiki_products.py`) - Khuyến nghị cho Production
 - **Lập trình bất đồng bộ (`asyncio` + `aiohttp`)**: Quản lý connection pool với keep-alive, pacing request ngẫu nhiên tự nhiên (`NaturalPacer`).
-- **Worker Pool có gắn nhãn**: Log mỗi request đều hiển thị `[Worker N]` để theo dõi worker nào đang xử lý ID nào. Hỗ trợ từ **1 đến 20 workers** đồng thời (mặc định: 20).
-- **Cung cấp public API `run_product_ids()`**: Cho phép các module khác (như `main.py`) gọi trực tiếp engine với danh sách ID tùy chỉnh, tái sử dụng toàn bộ logic retry/checkpoint.
+- **Worker Pool có gắn nhãn**: Log mỗi request đều hiển thị `[Worker N]` để theo dõi worker nào đang xử lý ID nào. Hỗ trợ từ **1 đến 20 workers** đồng thời.
+- **Cung cấp public API `run_product_ids()`**: Cho phép các module khác (như `src/main.py`) gọi trực tiếp engine với danh sách ID tùy chỉnh, tái sử dụng toàn bộ logic retry/checkpoint.
 - **Cơ chế Checkpoint đa lớp**:
   - `products_output.jsonl`: Append từng bản ghi và `fsync` ngay lập tức chống mất dữ liệu khi crash/tắt đột ngột.
   - `products_output.progress.txt`: Tập hợp ID đã thành công giúp Resume tức thì mà không cần duyệt lại JSON lớn.
@@ -204,9 +163,8 @@ Hệ thống cung cấp **3 chế độ thực thi** phù hợp với từng nhu
   - `products_output.failed_permanent.json`: Tách riêng các ID không thể cào (404, payload sai định dạng, đã hết lượt retry).
   - `products_output.stats.json`: Ghi nhận và tích lũy tổng thời gian cào qua nhiều lần chạy, tính tốc độ trung bình.
 
-#### 2. Batch Streaming Engine (`main.py`)
-- **Refactored**: `main.py` dùng trực tiếp `run_product_ids()` từ `fetch_tiki_products.py` — tái sử dụng toàn bộ cơ chế retry/checkpoint/cooldown.
-- **Tự động chia file theo Batch**: Cứ mỗi `--batch-size` (mặc định 1,000) sản phẩm sẽ đóng gói thành một file riêng (`products_part_0001.json`, `products_part_0002.json`, ...) trong thư mục `data/output/concurrency/parts/` (hoặc `data/output/retry_pass2/parts/`).
+#### 2. Batch Streaming Engine (`src/main.py`)
+- **Tự động chia file theo Batch**: Cứ mỗi `--batch-size` (mặc định 1,000) sản phẩm sẽ đóng gói thành một file riêng (`products_part_0001.json`, `products_part_0002.json`, ...) trong thư mục `data/output/concurrency/parts/` (hoặc `data/output/retry_passX/parts/`).
 - **Log trạng thái chi tiết từng batch**: Trước và sau mỗi batch đều in ra số lượng `success`, `permanent_failed`, `due`, `pending_retry` và `cooldown` để theo dõi tiến độ toàn pipeline.
 - **Tích hợp Adaptive Stepped Backoff**: Tự động xử lý thông minh khi hết cooldown WAF, không cần con người can thiệp.
 
@@ -406,139 +364,159 @@ Trong PyCharm: tạo 2 Run Configuration kiểu Python, chọn script `main.py`,
 
 ---
 
-### Bước 5: Chạy Tự vận hành Không chạm (Zero-Touch Unattended Automation)
+### Bước 5: Chạy Phase 1 - Cào chính 200,000 ID
 
-Hệ thống cung cấp trọn bộ script tự động hóa hoàn toàn 200,000 sản phẩm chia cho 5 Cloudflare Worker Proxies, tích hợp cơ chế **Auto-Wait Loop** (bị WAF thì tự ngủ đếm ngược rồi tự cào tiếp, không thoát tiến trình) và **macOS LaunchAgent** (tự chạy ngầm khi mở máy):
+Khởi chạy 5 tiến trình song song qua 5 Cloudflare Worker Edge Proxies, chia đều 200 batches (1,000 items/batch):
 
-#### 1. Khởi chạy 5 Process song song bằng 1 lệnh duy nhất:
+#### 1. Khởi chạy 5 Process song song:
 ```bash
+bash runners/phase1/run.sh
+# Hoặc dùng script tương thích cũ tại thư mục gốc:
 ./run_all.sh
 ```
-* Tự động kiểm tra kết nối WiFi/Internet (chờ đến khi có mạng mới bắt đầu).
-* Tự động kích hoạt song song 5 process tương ứng 5 dải batch:
-  - **Process 1**: Batch 0001 - 0040 qua `tiki-proxy-worker-1` (Log: `logs/p1.log`)
-  - **Process 2**: Batch 0041 - 0080 qua `tiki-proxy-worker-2` (Log: `logs/p2.log`)
-  - **Process 3**: Batch 0081 - 0120 qua `tiki-proxy-worker-3` (Log: `logs/p3.log`)
-  - **Process 4**: Batch 0121 - 0160 qua `tiki-proxy-worker-4` (Log: `logs/p4.log`)
-  - **Process 5**: Batch 0161 - 0200 qua `tiki-proxy-worker-5` (Log: `logs/p5.log`)
+* Tự động kiểm tra kết nối Internet trước khi kích hoạt.
+* 5 tiến trình chạy nền độc lập:
+  - **Process 1:** Batch 0001 – 0040 qua `tiki-proxy-worker-1` (Log: `logs/p1.log`)
+  - **Process 2:** Batch 0041 – 0080 qua `tiki-proxy-worker-2` (Log: `logs/p2.log`)
+  - **Process 3:** Batch 0081 – 0120 qua `tiki-proxy-worker-3` (Log: `logs/p3.log`)
+  - **Process 4:** Batch 0121 – 0160 qua `tiki-proxy-worker-4` (Log: `logs/p4.log`)
+  - **Process 5:** Batch 0161 – 0200 qua `tiki-proxy-worker-5` (Log: `logs/p5.log`)
 
-#### 2. Dừng khẩn cấp toàn bộ 5 Process:
+#### 2. Theo dõi Dashboard Phase 1 thời gian thực:
 ```bash
+python3 monitor/check_status.py
+# Hoặc:
+python3 monitor/check_retry_pass1_status.py
+```
+
+#### 3. Dừng khẩn cấp toàn bộ tiến trình Phase 1:
+```bash
+bash runners/phase1/stop.sh
+# Hoặc:
 ./stop_all.sh
 ```
 
-#### 3. Cài đặt tự động chạy khi mở máy trên macOS (LaunchAgent Background Daemon):
+---
+
+### Bước 6: Chiến lược Quét vét lỗi đa tầng (Phase 2 -> 3 -> 4) & Generic Runner
+
+Sau mỗi Phase, những ID chưa lấy được (WAF challenge, timeout hoặc HTTP 404) được trích xuất sang file input riêng biệt để cào lại ở Phase tiếp theo. Kết quả của mỗi Phase được **lưu cách ly trong thư mục riêng** (`data/output/retry_passX/parts/`), đảm bảo an toàn tuyệt đối, không đè hay làm hỏng dữ liệu của các phase trước.
+
+#### 🎯 Tùy chọn A: Dùng Generic Retry Runner (Khuyến nghị cho mọi Phase)
+Hệ thống cung cấp runner đa năng `runners/retry.sh` và dashboard `monitor/check_retry.py` tự động tính toán batch, chia đều cho 5 proxies:
+
 ```bash
-# Cài đặt và kích hoạt tự khởi chạy khi đăng nhập/mở máy:
-bash scripts/setup_daemon.sh install
+# 1. Chạy quét vét Phase bất kỳ (ví dụ Phase 3 hoặc Phase 4):
+bash runners/retry.sh --phase 4
 
-# Xem trạng thái dịch vụ ngầm:
-bash scripts/setup_daemon.sh status
+# 2. Mở Dashboard giám sát trực quan thời gian thực:
+python3 monitor/check_retry.py --phase 4
 
-# Tạm dừng hoặc khởi động lại:
-bash scripts/setup_daemon.sh stop
-bash scripts/setup_daemon.sh start
+# Chế độ theo dõi liên tục tự refresh màn hình:
+python3 monitor/check_retry.py --phase 4 --watch
 
-# Gỡ bỏ hoàn toàn daemon:
-bash scripts/setup_daemon.sh uninstall
+# 3. Dừng an toàn tiến trình retry đang chạy:
+bash runners/stop_retry.sh
 ```
-* **Đặc tính Daemon**:
+
+#### 🎯 Tùy chọn B: Chạy qua các Runner chuyên biệt từng Phase
+```bash
+# --- PHASE 2: Quét vét 94,307 ID lỗi sau Phase 1 ---
+bash runners/phase2/run.sh
+python3 monitor/check_retry_pass2_status.py
+bash runners/phase2/stop.sh
+
+# --- PHASE 3: Quét vét 83,804 ID lỗi sau Phase 2 ---
+bash runners/phase3/run.sh
+python3 monitor/check_retry_pass3_status.py
+bash runners/phase3/stop.sh
+
+# --- PHASE 4: Quét vét 75,701 ID lỗi sau Phase 3 ---
+bash runners/phase4/run.sh
+python3 monitor/check_retry_pass4_status.py
+bash runners/phase4/stop.sh
+```
+
+---
+
+### Bước 7: Hợp nhất Toàn diện (Master Merge & Deduplication)
+
+Thay thế hoàn toàn các thao tác đối chiếu thủ công rời rạc, script `tools/merge_parts.py` là pipeline tự động hóa hợp nhất dữ liệu từ tất cả các giai đoạn:
+
+```bash
+python3 tools/merge_parts.py
+```
+
+#### 🌟 Các tính năng vượt trội của Master Merge:
+1. **Dynamic Parts Discovery:** Tự động quét và nhận diện tất cả thư mục `concurrency/parts` và `retry_*/parts` (Phase 1, 2, 3, 4, ...) mà không cần cấu hình cứng.
+2. **Khử trùng lặp ID (Deduplication):** Tự động lọc trùng chéo giữa các Phase, ưu tiên ghi đè bản ghi mới nhất.
+3. **Đồng bộ lỗi 404 thực tế:** Đối chiếu với 200,000 ID gốc để xác định danh sách 404 còn tồn đọng chính xác.
+4. **Xuất bản đa định dạng (3-in-1 Export):**
+   - File JSON tổng hợp: `data/output/concurrency/products_output.json` (Atomic Write chống corrupt).
+   - File JSONL stream: `data/output/concurrency/products_output.jsonl`.
+   - File CSV hoàn chỉnh: `data/output/all_products.csv`.
+   - Danh sách 404: `data/output/concurrency/products_output.failed_permanent.json`.
+
+---
+
+### Bước 8: Chạy ngầm tự động qua macOS LaunchAgent Daemon
+
+Dự án hỗ trợ chạy ngầm cấp hệ thống qua Launchd ([`scripts/setup_retry_daemon.sh`](file:///Users/lyxuanthanh/Documents/DataEngineer/Project_2/scripts/setup_retry_daemon.sh)):
+
+```bash
+# Cài đặt daemon tự chạy ngầm khi mở máy:
+bash scripts/setup_retry_daemon.sh install
+
+# Xem trạng thái daemon:
+bash scripts/setup_retry_daemon.sh status
+
+# Tạm dừng / Khởi động lại:
+bash scripts/setup_retry_daemon.sh stop
+bash scripts/setup_retry_daemon.sh start
+
+# Gỡ bỏ daemon:
+bash scripts/setup_retry_daemon.sh uninstall
+```
+
+* **Cơ chế tự phục hồi (Self-Healing):**
   - `RunAtLoad = true`: Mở máy hoặc đăng nhập là tự động chạy ngầm.
-  - `KeepAlive`: Tự khởi động lại nếu sập nguồn, mất WiFi đột ngột.
-  - Khi cào xong toàn bộ 200 batch (exit code 0), dịch vụ tự động kết thúc hoàn toàn.
-
-#### 4. Xem Dashboard giám sát thời gian thực:
-```bash
-python3 check_status.py
-```
-* Hiển thị bảng trạng thái chi tiết của 5 tiến trình: PID, CPU %, thời gian chạy, batch đang xử lý, và tổng tiến độ % trên toàn bộ 200,000 ID.
-
-#### 5. Tổng hợp dữ liệu từ các Batch Parts:
-```bash
-python3 merge_parts.py
-```
-* Tự động quét và hợp nhất toàn bộ các file part trong `data/output/concurrency/parts/`, loại bỏ trùng lặp bằng set và xuất ra 3 định dạng: `products_output.json`, `products_output.jsonl`, và `all_products.csv`.
+  - `KeepAlive.SuccessfulExit = false`: Nếu máy sleep, tắt WiFi hoặc crash, macOS tự khởi động lại crawler sau 15 giây.
+  - Khi hoàn tất 100% (exit 0), daemon tự động dừng hẳn.
 
 ---
 
-### Bước 6: Phase 2 - Quét vét 94,307 ID lỗi (Dead Letter Queue Re-crawl)
+## 📊 6. Báo cáo kết quả & Thống kê thời gian cào chi tiết
 
-Sau khi hoàn tất Phase 1 thu thập thành công 105,693 sản phẩm, hệ thống ghi nhận 94,307 ID rơi vào trạng thái `http_404`. Để tối đa hóa tỷ lệ dữ liệu thu thập được (phòng trường hợp 404 giả do WAF hoặc lỗi mạng chập chờn), Phase 2 được thiết kế để **quét vét lại toàn bộ danh sách ID này** với cơ chế bảo vệ dữ liệu tuyệt đối:
+### 🏆 Tổng kết Toàn diện Dự án (200,000 Product IDs)
 
-- **Cách ly thư mục đầu ra:** Kết quả lưu tại `data/output/retry_pass2/parts/` để không làm ảnh hưởng đến dữ liệu Phase 1.
-- **5 Tiến trình ngầm song song:** 95 batches chia đều cho 5 Cloudflare Worker Proxies.
-- **Tích hợp Adaptive Stepped Backoff:** Tự động giãn cách thời gian chờ khi gặp WAF (3-5m check x 3 lần → 5m → 10m → 15m → 30m → 60m).
+Dự án đã giải quyết sạch **100% (200,000 / 200,000 ID)** qua 4 Phase quét vét:
 
-#### 1. Trích xuất danh sách ID lỗi từ Phase 1:
-```bash
-python3 scripts/extract_failed_ids.py
-```
-* Đọc từ `data/output/concurrency/products_output.failed_permanent.json` và tạo ra `data/input/failed_ids_pass2.txt` (chứa chính xác 94,307 ID duy nhất).
-
-#### 2. Khởi chạy 5 Process quét lỗi ngầm:
-```bash
-./run_retry_pass2.sh
-```
-* Tự động khởi động 5 tiến trình chạy nền:
-  - **Process 1:** Batch 0001 – 0019 qua `tiki-proxy-worker-1` (Log: `logs/retry_p1.log`)
-  - **Process 2:** Batch 0020 – 0038 qua `tiki-proxy-worker-2` (Log: `logs/retry_p2.log`)
-  - **Process 3:** Batch 0039 – 0057 qua `tiki-proxy-worker-3` (Log: `logs/retry_p3.log`)
-  - **Process 4:** Batch 0058 – 0076 qua `tiki-proxy-worker-4` (Log: `logs/retry_p4.log`)
-  - **Process 5:** Batch 0077 – 0095 qua `tiki-proxy-worker-5` (Log: `logs/retry_p5.log`)
-* Lưu PIDs vào `logs/retry_crawler.pids` để quản lý tập trung.
-
-#### 3. Theo dõi Dashboard Phase 2 thời gian thực:
-```bash
-python3 check_retry_status.py
-```
-* Theo dõi tiến độ 95 batches, tốc độ xử lý, và đặc biệt là **tổng số sản phẩm vớt được** từ tập ID lỗi.
-
-#### 4. Dừng khẩn cấp toàn bộ tiến trình Phase 2:
-```bash
-./stop_retry_pass2.sh
-```
-
-#### 5. Đối chiếu & Hợp nhất sản phẩm vớt được sau khi hoàn tất:
-```bash
-python3 reconcile_pass2.py
-```
-* Tự động quét toàn bộ `data/output/retry_pass2/parts/`, trích xuất các sản phẩm cứu được và hợp nhất vào bộ dữ liệu chính mà không làm trùng lặp ID.
+| Chỉ số | Số lượng | Tỷ lệ (%) | Ghi chú |
+| :--- | :---: | :---: | :--- |
+| **Tổng ID đầu vào** | **200,000** | **100.00%** | Danh sách ID Tiki gốc |
+| **Sản phẩm sạch thu được** | **124,299** | **62.15%** | Đã làm sạch HTML, bóc tách đầy đủ cấu trúc |
+| **Lỗi vĩnh viễn (True 404)** | **75,701** | **37.85%** | Sản phẩm đã bị xóa hoặc link không tồn tại trên Tiki |
+| **Tỷ lệ trùng lặp dữ liệu** | **0** | **0.00%** | Dữ liệu được deduplicate tuyệt đối qua set |
+| **Dung lượng File JSON** | **313.1 MB** | — | `data/output/concurrency/products_output.json` |
+| **Dung lượng File CSV** | **292.0 MB** | — | `data/output/all_products.csv` |
 
 ---
 
-## 📊 6. Theo dõi tiến độ & Thống kê thời gian
+### ⏱️ Thống kê Thời gian Cào thực tế (Active Parallel Runtime)
 
-Khi chạy `fetch_tiki_products.py`, hệ thống tự động tính toán và lưu thời gian cào dữ liệu vào file `*.stats.json` (tích lũy qua mọi lần chạy/resume):
+Nhờ kiến trúc chạy song song **5 Process** qua **5 Cloudflare Worker Proxies**, thời gian cào thực tế (**Active Parallel Time**) được rút ngắn gấp 5 lần so với cào đơn luồng:
 
-### File thống kê mẫu `products_output.stats.json`:
-```json
-{
-  "total_products_saved": 100,
-  "total_time_seconds": 215.4,
-  "total_time_formatted": "00:03:35",
-  "total_time_human": "3 phút 35 giây",
-  "average_seconds_per_product": 2.15,
-  "average_speed": "2.15s / sản phẩm",
-  "last_run_duration_seconds": 45.2,
-  "last_run_duration": "45.2s",
-  "updated_at": "2026-09-05 17:40:00 +0700"
-}
-```
+| Giai đoạn | Số ID quét | SP sạch mới | Thời gian cào song song thực tế | Tổng giờ công CPU tích lũy |
+| :--- | :---: | :---: | :---: | :---: |
+| **Phase 1** (Cào chính) | 200,000 | 105,693 | **~21.45 giờ** | 124.0 giờ |
+| **Phase 2** (DLQ lần 1) | 94,307 | +10,503 | **8.14 giờ** | 33.7 giờ |
+| **Phase 3** (DLQ lần 2) | 83,804 | +8,103 | **10.23 giờ** | 50.5 giờ |
+| **Phase 4** (DLQ lần 3) | 75,701 | +0 *(100% 404)* | **10.72 giờ** | 50.0 giờ |
+| **TỔNG CỘNG** | **200,000** | **124,299** | **~50.5 giờ** *(~2.1 ngày cào thực tế)* | **258.2 giờ** *(~10.8 ngày CPU)* |
 
-### Log tổng kết khi kết thúc lượt chạy:
-```text
-Kết thúc lượt chạy:
-  ⏱️ Thời gian lượt này    : 45.2s
-  ⌛ Tổng thời gian tích lũy : 3 phút 35 giây (00:03:35)
-  ⚡ Tốc độ trung bình      : 2.15s / sản phẩm
-  ✅ Mới lưu thành công     : 25
-  ⏳ Lỗi tạm thời (retry)  : 0
-  ❌ Lỗi vĩnh viễn         : 2 (tổng tích lũy: 5)
-  📦 Tổng đã lưu            : 100
-  📄 Output                 : data/output/concurrency/products_output.json
-  📊 Stats                  : data/output/concurrency/products_output.stats.json
-  🚫 Permanent fails        : data/output/concurrency/products_output.failed_permanent.json
-```
+> 📌 **Lưu ý về số đo thời gian:**
+> - **Thời gian cào thực tế (~50.5h):** Được tính toán chuẩn xác từ file `.stats.json` của từng batch, chỉ ghi nhận thời gian mạng và CPU thực sự gửi request cào dữ liệu, loại bỏ hoàn toàn các khoảng thời gian tắt máy, máy ngủ (sleep), hay thời gian chờ ngắt quãng giữa các lần khởi động lại tiến trình.
+> - **Thời gian trải dài theo lịch (~64.5h):** Là tổng thời gian từ lúc bấm lệnh Phase 1 (08/09) đến khi Phase 4 kết thúc (12/09), bao gồm cả thời gian gập máy nghỉ đêm.
 
 ---
 
