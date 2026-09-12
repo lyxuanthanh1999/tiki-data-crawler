@@ -33,3 +33,5 @@ data/output/concurrency/products_output.json
 data/output/concurrency/products_output.jsonl
 data/output/retry_pass2/
 data/output/retry_pass3/
+data/output/retry_pass4/
+data/output/retry_*/

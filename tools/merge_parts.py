@@ -17,12 +17,32 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-DEFAULT_PARTS_DIRS = [
-    Path("data/output/concurrency/parts"),
-    Path("data/output/retry_pass2/parts"),
-    Path("data/output/retry_pass3/parts"),
-    Path("data/output/retry_pass4/parts"),
-]
+# Thư mục gốc output
+DATA_OUTPUT_DIR = Path("data/output")
+
+
+def discover_parts_dirs() -> List[Path]:
+    """
+    Tự động phát hiện tất cả thư mục parts theo pattern:
+      - data/output/concurrency/parts          (Phase 1)
+      - data/output/retry_{name}/parts         (Generic Retry Runner: pass2, pass3, pass4, pass5, ...)
+    Đảm bảo không bỏ sót bất kỳ phase nào dù thêm bằng Generic Retry Runner.
+    """
+    dirs: List[Path] = []
+
+    # Phase 1: concurrency
+    p1 = DATA_OUTPUT_DIR / "concurrency" / "parts"
+    if p1.exists():
+        dirs.append(p1)
+
+    # Retry phases: retry_pass2, retry_pass3, ..., retry_pasN, retry_anything
+    if DATA_OUTPUT_DIR.exists():
+        retry_dirs = sorted(DATA_OUTPUT_DIR.glob("retry_*/parts"))
+        for d in retry_dirs:
+            if d.exists() and d not in dirs:
+                dirs.append(d)
+
+    return dirs
 DEFAULT_INPUT_FILE = Path("data/input/product_ids.txt")
 DEFAULT_OUTPUT_JSON = Path("data/output/concurrency/products_output.json")
 DEFAULT_OUTPUT_CSV = Path("data/output/all_products.csv")
@@ -94,33 +114,36 @@ def main():
     start_time = time.time()
 
     print("=" * 70)
-    print("📦 BẮT ĐẦU MASTER MERGE: HỢP NHẤT TOÀN DIỆN PHASE 1, 2, 3")
+    print("📦 BẮT ĐẦU MASTER MERGE: HỢP NHẤT TOÀN DIỆN TẤT CẢ PHASES")
     print("=" * 70)
 
     all_products: Dict[int, Dict[str, Any]] = {}
     phase_stats = []
     total_raw_products = 0  # Tổng sản phẩm trước khi dedup
 
-    # Quét lần lượt 3 thư mục Phase 1, 2, 3
-    for idx, p_dir in enumerate(DEFAULT_PARTS_DIRS, 1):
-        if p_dir.exists():
-            prods = load_products_from_dir(p_dir)
-            new_added = 0
-            overwritten = 0
-            for pid, pdata in prods.items():
-                if pid not in all_products:
-                    all_products[pid] = pdata
-                    new_added += 1
-                else:
-                    all_products[pid] = pdata  # ghi đè dữ liệu mới nhất
-                    overwritten += 1
-            total_raw_products += len(prods)
-            phase_stats.append((f"Phase {idx}", p_dir, len(prods), new_added, overwritten))
-            dup_tag = f" | 🔁 {overwritten:,} trùng (ghi đè)" if overwritten > 0 else " | ✅ Không trùng"
-            print(f"  🔹 [Phase {idx}] {p_dir}")
-            print(f"       📥 Tổng load : {len(prods):,} | ➕ Thêm mới: {new_added:,}{dup_tag}")
-        else:
-            print(f"  🔹 [Phase {idx}] {p_dir} -> (Chưa khởi tạo)")
+    # Tự động phát hiện tất cả thư mục parts
+    parts_dirs = discover_parts_dirs()
+    print(f"🔍 Tự phát hiện {len(parts_dirs)} thư mục parts:")
+    for d in parts_dirs:
+        print(f"     • {d}")
+    print()
+
+    for idx, d in enumerate(parts_dirs, 1):
+        prods = load_products_from_dir(d)
+        new_added = 0
+        overwritten = 0
+        for pid, pdata in prods.items():
+            if pid not in all_products:
+                all_products[pid] = pdata
+                new_added += 1
+            else:
+                all_products[pid] = pdata  # ghi đè dữ liệu mới nhất
+                overwritten += 1
+        total_raw_products += len(prods)
+        phase_stats.append((f"Phase {idx}", d, len(prods), new_added, overwritten))
+        dup_tag = f" | 🔁 {overwritten:,} trùng (ghi đè)" if overwritten > 0 else " | ✅ Không trùng"
+        print(f"  🔹 [Phase {idx}] {d}")
+        print(f"       📥 Tổng load : {len(prods):,} | ➕ Thêm mới: {new_added:,}{dup_tag}")
 
     total_clean_products = len(all_products)
     total_cross_phase_dups = total_raw_products - total_clean_products
@@ -141,6 +164,14 @@ def main():
     failed_pids = sorted(list(all_input_set - saved_pids)) if all_input_set else []
     total_failed = len(failed_pids)
 
+    # ── Validation: ID trong JSON vs ID từ input ──────────────────────────────
+    # "Alien IDs": có trong data nhưng KHÔNG có trong input list
+    # → Tiki redirect request(X) → trả về product(Y), Y không phải ID chúng ta cần
+    if all_input_set:
+        alien_ids = sorted(saved_pids - all_input_set)
+    else:
+        alien_ids = []  # Không có input file → không thể validate
+
     print("-" * 70)
     print(f"📥 Tổng sản phẩm load từ tất cả parts : {total_raw_products:,}")
     if total_cross_phase_dups > 0:
@@ -150,6 +181,23 @@ def main():
     print(f"🌟 Tổng sản phẩm sạch sau dedup        : {total_clean_products:,}")
     print(f"❌ Số lỗi 404 thực tế còn lại          : {total_failed:,}")
     print(f"📦 Tổng ID đã giải quyết               : {total_clean_products + total_failed:,} / {total_input_ids:,}")
+
+    # Báo cáo Alien IDs
+    if alien_ids:
+        print("-" * 70)
+        print(f"⚠️  CẢNH BÁO: ID trong JSON ≠ ID trong input (Alien/Redirect)")
+        print(f"   → {len(alien_ids):,} sản phẩm có JSON id KHÔNG có trong input list")
+        print(f"   → Tiki có thể đã redirect request sang product khác")
+        sample = alien_ids[:20]
+        print(f"   → Mẫu 20 alien IDs đầu: {sample}")
+        # Ghi file alien_ids để review
+        alien_out = args.output_json.with_name(args.output_json.stem + ".alien_ids.txt")
+        with open(alien_out, "w", encoding="utf-8") as f:
+            for aid in alien_ids:
+                f.write(f"{aid}\n")
+        print(f"   → Đã ghi toàn bộ alien IDs ra: {alien_out}")
+    else:
+        print(f"✅ Validation ID: Tất cả JSON id đều khớp với input list (0 alien)")
     print("-" * 70)
 
     # 1. Ghi file JSON tổng hợp (Atomic Write)
