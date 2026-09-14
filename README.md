@@ -1,78 +1,77 @@
-# 🛒 Tiki Product Data Crawler & Pipeline (Project 2 - Data Engineer)
+# Tiki Selenium Worker Hybrid
 
-Hệ thống crawl và chuẩn hóa dữ liệu lớn cho **200,000 sản phẩm** từ Tiki API (`https://api.tiki.vn/product-detail/api/v1/products/{id}`). Hệ thống được thiết kế với kiến trúc chịu lỗi (fault-tolerant), tối ưu hóa hiệu năng cao bằng lập trình bất đồng bộ (`asyncio` + `aiohttp`), tích hợp cơ chế chống thất thoát dữ liệu đa tầng (Durable Append, Atomic Writes, Multi-layer Checkpointing) và cơ chế vượt qua các lớp bảo vệ chống scraping (BytePlus WAF / Rate Limiter).
+Nhánh `selenium-worker-hybrid` dùng để thử nghiệm mô hình crawl Tiki kết hợp:
 
-Dự án đã hoàn tất **100% (200,000 / 200,000 ID)** qua 4 Phase quét vét Dead Letter Queue (DLQ), thu thập thành công **124,299 sản phẩm sạch (62.15%)** và xác nhận chính xác **75,701 lỗi vĩnh viễn True 404 (37.85%)**.
+- Selenium Chrome: lấy `cookie` và `user_agent` từ trình duyệt thật.
+- Cloudflare Worker: proxy tùy chọn để tách endpoint/IP khỏi máy local.
+- `aiohttp` crawler: vẫn là engine crawl chính để giữ tốc độ, checkpoint và resume.
 
-> Nhánh `selenium-worker-hybrid` là nhánh thử nghiệm riêng cho mô hình **Selenium Browser Session + Cloudflare Worker + aiohttp crawler**. Selenium không dùng để cào từng sản phẩm; Selenium chỉ lấy cookie/user-agent từ Chrome thật, còn crawler chính vẫn dùng API JSON để giữ tốc độ, checkpoint và resume.
+Selenium không được dùng để mở 200,000 trang sản phẩm. Selenium chỉ bootstrap browser session; dữ liệu sản phẩm vẫn lấy từ API:
 
----
+```text
+https://api.tiki.vn/product-detail/api/v1/products/{product_id}
+```
 
-## 📑 Mục Lục
-0. [Nhánh thử nghiệm Selenium Worker Hybrid](#0-nhánh-thử-nghiệm-selenium-worker-hybrid)
-1. [Cấu trúc thư mục dự án (Modular Architecture)](#1-cấu-trúc-thư-mục-dự-án-modular-architecture)
-2. [Kiến trúc & Sơ đồ luồng hệ thống End-to-End (4-Phase Pipeline)](#2-kiến-trúc--sơ-đồ-luồng-hệ-thống-end-to-end-4-phase-pipeline)
-3. [Quy chuẩn dữ liệu đầu ra & Làm sạch HTML](#3-quy-chuẩn-dữ-liệu-đầu-ra--làm-sạch-html)
-4. [Bảng phân loại & Xử lý các trường hợp lỗi & WAF Cooldown](#4-bảng-phân-loại--xử-lý-các-trường-hợp-lỗi)
-   - [Cơ chế WAF Adaptive Stepped Backoff (Tối ưu hóa thời gian quét lại)](#-cơ-chế-waf-adaptive-stepped-backoff-tối-ưu-hóa-thời-gian-quét-lại)
-5. [Hướng dẫn cài đặt & Cách chạy Source Code](#5-hướng-dẫn-cài-đặt--cách-chạy-source-code)
-   - [Bước 5: Chạy Phase 1 - Cào chính 200,000 ID](#bước-5-chạy-phase-1---cào-chính-200000-id)
-   - [Bước 6: Chiến lược Quét vét lỗi đa tầng (Phase 2 -> 3 -> 4) & Generic Runner](#bước-6-chiến-lược-quét-vét-lỗi-đa-tầng-phase-2---3---4--generic-runner)
-   - [Bước 7: Hợp nhất Toàn diện (Master Merge & Deduplication)](#bước-7-hợp-nhất-toàn-diện-master-merge--deduplication)
-   - [Bước 8: Chạy ngầm tự động qua macOS LaunchAgent Daemon](#bước-8-chạy-ngầm-tự-động-qua-macos-launchagent-daemon)
-6. [Báo cáo kết quả & Thống kê thời gian cào chi tiết](#6-báo-cáo-kết-quả--thống-kê-thời-gian-cào-chi-tiết)
-7. [Xử lý sự cố (Troubleshooting)](#7-xử-lý-sự-cố-troubleshooting)
-8. [Chạy Unit Test](#8-chạy-unit-test)
-
----
-
-## 🧪 0. Nhánh thử nghiệm Selenium Worker Hybrid
-
-### Giới thiệu hệ thống
-
-Mục tiêu của nhánh này là kiểm chứng xem browser session thật có giúp crawler ổn định hơn khi đi qua Tiki API hoặc Cloudflare Worker hay không. Kiến trúc vẫn ưu tiên API JSON vì nhanh, nhẹ và dễ resume hơn nhiều so với mở trình duyệt cho từng sản phẩm.
-
-Mô hình vận hành:
+## Mô Hình
 
 ```mermaid
 flowchart LR
-    SEL["Selenium Chrome<br/>capture cookie + user-agent"]
+    IDS["product_ids_part1.txt / product_ids_part2.txt"]
+    SEL["Selenium Chrome"]
     SESSION["data/session/tiki_browser_session.json"]
-    MAIN["src/main.py<br/>batch orchestrator"]
-    FETCH["src/fetch_tiki_products.py<br/>aiohttp workers"]
-    WORKER["Cloudflare Worker<br/>optional proxy"]
+    DAEMON["run_selenium_worker_daemon.sh"]
+    MAIN["src/main.py"]
+    FETCH["src/fetch_tiki_products.py"]
+    CF["Cloudflare Worker optional"]
     TIKI["Tiki Product Detail API"]
-    OUT["parts/*.json + *.jsonl<br/>progress/retry/stats"]
+    OUT["parts/*.json, *.jsonl, *.progress.txt, *.retry.json"]
 
     SEL --> SESSION
-    SESSION --> MAIN
+    IDS --> DAEMON
+    SESSION --> DAEMON
+    DAEMON --> MAIN
     MAIN --> FETCH
-    FETCH --> WORKER
-    WORKER --> TIKI
+    FETCH --> CF
+    CF --> TIKI
     FETCH --> TIKI
     FETCH --> OUT
 ```
 
-Các thành phần chính:
+## Source Chính
 
-| Thành phần | Vai trò |
-| :--- | :--- |
-| `tools/capture_tiki_browser_session.py` | Mở Chrome bằng Selenium, lấy `user_agent` và cookies |
-| `data/session/tiki_browser_session.json` | File session local, đã bị `.gitignore`, không push GitHub |
-| `src/main.py --cookie-file ...` | Chạy batch/resume và truyền browser session xuống engine |
-| `src/fetch_tiki_products.py` | Gọi API bằng `aiohttp`, gắn cookie/user-agent nếu có |
-| `--worker-url` | Chuyển request qua Cloudflare Worker thay vì gọi Tiki trực tiếp |
-| `runners/run_selenium_worker_daemon.sh` | Chạy nền, giữ máy thức bằng `caffeinate`, tự resume sau khi rớt mạng/process thoát |
+```text
+src/
+  main.py                     Batch orchestrator, chia output theo part 1000 sản phẩm
+  fetch_tiki_products.py      Async crawler, retry queue, WAF backoff, cookie-file
+  cleaner.py                  Chuẩn hóa description và bóc tách field cần lấy
+  config.py                   API base URL, headers, timeout, defaults
 
-### Cách chạy nhanh
+tools/
+  capture_tiki_browser_session.py   Mở Chrome Selenium và lưu cookie/user-agent
+  merge_parts.py                    Merge output parts khi cần tổng hợp
 
-1. Cài Selenium:
+runners/
+  run_selenium_worker_daemon.sh      Chạy nền, auto-wait, auto-resume
+  stop_selenium_worker_daemon.sh     Dừng daemon theo PID file
+
+requirements.txt             Dependency crawler chính
+requirements-selenium.txt    Dependency Selenium riêng cho nhánh thử nghiệm
+```
+
+Các output runtime như `data/session/`, `data/output/selenium_worker_test/`, `logs/` không được push lên GitHub.
+
+## Cài Đặt
 
 ```bash
+./venv/bin/python -m pip install -r requirements.txt
 ./venv/bin/python -m pip install -r requirements-selenium.txt
 ```
 
-2. Capture browser session:
+Nếu Selenium chưa mở được Chrome, cập nhật Chrome lên bản mới. Selenium 4 sẽ tự xử lý ChromeDriver qua Selenium Manager trong đa số trường hợp.
+
+## Bước 1: Capture Browser Session
+
+Chạy lệnh này trước để tạo file cookie:
 
 ```bash
 ./venv/bin/python tools/capture_tiki_browser_session.py \
@@ -81,404 +80,37 @@ Các thành phần chính:
   --wait-seconds 8
 ```
 
-3. Chạy nền crawler hybrid:
+Kết quả:
+
+```text
+data/session/tiki_browser_session.json
+```
+
+File này chứa cookie/session local, không commit lên GitHub.
+
+## Bước 2: Chạy 200,000 ID Bằng 2 Daemon
+
+Khuyến nghị dùng 2 input đã chia sẵn:
+
+```text
+data/input/product_ids_part1.txt
+data/input/product_ids_part2.txt
+```
+
+### Process 1: Part 1, Gọi Tiki Direct
 
 ```bash
-./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
-  --input data/input/product_ids_part2.txt \
-  --output-dir data/output/selenium_worker_test/parts \
-  --batch-size 1000 \
-  --concurrency 10 \
-  --delay-min 0.8 \
-  --delay-max 2.0 \
-  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
-  --cookie-file data/session/tiki_browser_session.json
-```
-
-4. Theo dõi:
-
-```bash
-tail -f logs/tiki_worker.log
-wc -l data/output/selenium_worker_test/parts/products_part_0002.jsonl
-```
-
-5. Dừng:
-
-```bash
-./runners/stop_selenium_worker_daemon.sh --name tiki_worker
-```
-
-### Cơ chế chịu lỗi
-
-- Nếu gặp HTML/WAF challenge, crawler ghi `_global` cooldown vào `*.retry.json`.
-- Backoff WAF hiện theo chuỗi `5 phút -> 15 phút -> 30 phút -> 1 tiếng`, sau đó giữ `1 tiếng`.
-- Nếu rớt mạng, lỗi tạm thời vẫn nằm trong retry queue, không bị chuyển vĩnh viễn quá sớm.
-- Nếu process thoát, daemon ngủ `300s` rồi chạy lại `main.py`; `main.py` tự resume dựa vào `*.jsonl`, `*.progress.txt`, `*.retry.json`.
-- Nếu gập máy khiến macOS sleep sâu, process sẽ tạm dừng trong lúc sleep; khi mở máy/mạng ổn lại, runner tiếp tục vòng resume.
-
-### Khi nào dùng và không dùng Selenium
-
-Dùng Selenium khi cần bootstrap cookie/session thật hoặc kiểm chứng WAF. Không dùng Selenium để mở 200,000 trang sản phẩm, vì sẽ chậm hơn rất nhiều và vẫn có thể bị WAF nhận diện headless browser.
-
----
-
-## 📁 1. Cấu trúc thư mục dự án (Modular Architecture)
-
-Codebase được tái cấu trúc theo mô hình phân tầng module rõ ràng:
-
-```
-Project_2/
-├── src/                              # Mã nguồn Python chính (Core Engine)
-│   ├── main.py                       # CLI Entry point cào theo batch (hỗ trợ Adaptive Stepped Backoff)
-│   ├── fetch_tiki_products.py        # Engine cào Concurrency (Checkpoint 5 lớp, Retry Queue, Dynamic Cooldown)
-│   ├── crawler.py                    # Batch streaming crawler engine
-│   ├── cleaner.py                    # Module chuẩn hoá description & bóc tách cấu trúc HTML
-│   └── config.py                     # File cấu hình tập trung (URL, Headers, Timeouts, Paths)
-├── tools/                            # Công cụ tiện ích & xử lý dữ liệu tổng hợp
-│   ├── merge_parts.py                # Master Merge: Tự động phát hiện dynamic parts mọi Phase, khử trùng & xuất data
-│   ├── extract_failed_ids.py         # Trích xuất danh sách ID lỗi Phase 1 -> failed_ids_pass2.txt
-│   └── extract_failed_ids_pass3.py   # Trích xuất danh sách ID lỗi Phase 2 -> failed_ids_pass3.txt
-├── monitor/                          # Bộ Dashboard giám sát thời gian thực
-│   ├── check_retry.py                # Dashboard tổng quát (nhận tham số --name passX, --watch)
-│   ├── check_status.py               # Dashboard giám sát Phase 1
-│   ├── check_retry_pass1_status.py   # Wrapper dashboard Phase 1
-│   ├── check_retry_pass2_status.py   # Dashboard giám sát Phase 2
-│   ├── check_retry_pass3_status.py   # Dashboard giám sát Phase 3
-│   └── check_retry_pass4_status.py   # Dashboard giám sát Phase 4
-├── runners/                          # Bộ script điều phối thực thi 5 Process song song
-│   ├── retry.sh                      # Generic Retry Runner chạy bất kỳ Phase nào
-│   ├── stop_retry.sh                 # Generic Stop Runner dừng tiến trình an toàn
-│   ├── phase1/                       # Điều phối Phase 1 (200k ID): run.sh, stop.sh, start.command
-│   ├── phase2/                       # Điều phối Phase 2 (94k ID): run.sh, stop.sh, start.command
-│   ├── phase3/                       # Điều phối Phase 3 (84k ID): run.sh, stop.sh, start.command
-│   └── phase4/                       # Điều phối Phase 4 (76k ID): run.sh, stop.sh, start.command
-├── scripts/                          # Script cấu hình hệ thống
-│   └── setup_retry_daemon.sh         # Cài đặt macOS LaunchAgent Daemon tự chạy ngầm khi mở máy
-├── tests/                            # Bộ kiểm thử đơn vị tự động (Unit Tests)
-│   ├── test_crawler.py
-│   └── test_fetch_tiki_products.py
-├── data/
-│   ├── input/                        # Danh sách ID đầu vào
-│   │   ├── product_ids.txt           # 200,000 ID gốc ban đầu
-│   │   ├── failed_ids_pass2.txt      # 94,307 ID lỗi trích xuất cho Phase 2
-│   │   ├── failed_ids_pass3.txt      # 83,804 ID lỗi trích xuất cho Phase 3
-│   │   └── failed_ids_pass4.txt      # 75,701 ID lỗi trích xuất cho Phase 4
-│   └── output/                       # Thư mục lưu trữ kết quả độc lập từng Phase
-│       ├── concurrency/              # Kết quả Phase 1 (parts/ 200 files + products_output.*)
-│       ├── retry_pass2/              # Kết quả Phase 2 (parts/ 95 files)
-│       ├── retry_pass3/              # Kết quả Phase 3 (parts/ 84 files)
-│       ├── retry_pass4/              # Kết quả Phase 4 (parts/ 76 files)
-│       └── all_products.csv          # File CSV tổng hợp toàn bộ 124,299 sản phẩm sạch
-└── logs/                             # File log và PID của các tiến trình ngầm
-```
-
----
-
-## 🏗️ 2. Kiến trúc & Sơ đồ luồng hệ thống End-to-End (4-Phase Pipeline)
-
-### 📊 Sơ đồ Tổng thể Pipeline
-
-```mermaid
-flowchart TD
-    subgraph INPUT ["📥 Đầu vào Dữ liệu"]
-        IDS["data/input/product_ids.txt<br/>(200,000 Product IDs)"]
-    end
-
-    subgraph PROXIES ["🛡️ 5 Cloudflare Worker Edge Proxies"]
-        CF1["Worker Proxy 1"]
-        CF2["Worker Proxy 2"]
-        CF3["Worker Proxy 3"]
-        CF4["Worker Proxy 4"]
-        CF5["Worker Proxy 5"]
-    end
-
-    subgraph PHASE1 ["🚀 Phase 1: Cào Chính 200k ID (runners/phase1/run.sh)"]
-        P1["Process 1: Batch 001-040"]
-        P2["Process 2: Batch 041-080"]
-        P3["Process 3: Batch 081-120"]
-        P4["Process 4: Batch 121-160"]
-        P5["Process 5: Batch 161-200"]
-        RES_P1["Kết quả Phase 1:<br/>✅ 105,693 sạch | ❌ 94,307 lỗi tạm"]
-    end
-
-    subgraph PHASE2 ["🔄 Phase 2: Quét Vét DLQ Lần 1 (runners/phase2/run.sh)"]
-        F2_IN["data/input/failed_ids_pass2.txt<br/>(94,307 IDs)"]
-        RP2["5 Processes song song (95 Batches)"]
-        RES_P2["Kết quả Phase 2:<br/>🌟 +10,503 sạch | ❌ 83,804 lỗi"]
-    end
-
-    subgraph PHASE3 ["🔄 Phase 3: Quét Vét DLQ Lần 2 (runners/phase3/run.sh)"]
-        F3_IN["data/input/failed_ids_pass3.txt<br/>(83,804 IDs)"]
-        RP3["5 Processes song song (84 Batches)"]
-        RES_P3["Kết quả Phase 3:<br/>🌟 +8,103 sạch | ❌ 75,701 lỗi"]
-    end
-
-    subgraph PHASE4 ["🔄 Phase 4: Quét Vét DLQ Lần 3 (runners/phase4/run.sh)"]
-        F4_IN["data/input/failed_ids_pass4.txt<br/>(75,701 IDs)"]
-        RP4["5 Processes song song (76 Batches)"]
-        RES_P4["Kết quả Phase 4:<br/>🌟 +0 sạch | ❌ 75,701 True 404"]
-    end
-
-    subgraph MASTER_MERGE ["✨ Master Merge & Deduplication (tools/merge_parts.py)"]
-        MERGER["Tự động phát hiện dynamic parts folders<br/>Khử trùng lặp ID cross-phase<br/>Đồng bộ danh sách 404 thực tế"]
-        FINAL_JSON["products_output.json (313.1 MB)"]
-        FINAL_CSV["all_products.csv (292.0 MB)"]
-        FINAL_JSONL["products_output.jsonl"]
-        FINAL_404["products_output.failed_permanent.json"]
-    end
-
-    IDS --> P1 & P2 & P3 & P4 & P5
-    P1 & P2 & P3 & P4 & P5 --> CF1 & CF2 & CF3 & CF4 & CF5
-    CF1 & CF2 & CF3 & CF4 & CF5 --> RES_P1
-
-    RES_P1 -->|Trích xuất 94,307 lỗi| F2_IN
-    F2_IN --> RP2 --> RES_P2
-
-    RES_P2 -->|Trích xuất 83,804 lỗi| F3_IN
-    F3_IN --> RP3 --> RES_P3
-
-    RES_P3 -->|Trích xuất 75,701 lỗi| F4_IN
-    F4_IN --> RP4 --> RES_P4
-
-    RES_P1 & RES_P2 & RES_P3 & RES_P4 --> MERGER
-    MERGER --> FINAL_JSON & FINAL_CSV & FINAL_JSONL & FINAL_404
-```
-
----
-
-### Các Engine cào dữ liệu:
-
-Hệ thống cung cấp **2 chế độ thực thi chính**:
-
-#### 1. Concurrency Engine (`src/fetch_tiki_products.py`) - Khuyến nghị cho Production
-- **Lập trình bất đồng bộ (`asyncio` + `aiohttp`)**: Quản lý connection pool với keep-alive, pacing request ngẫu nhiên tự nhiên (`NaturalPacer`).
-- **Worker Pool có gắn nhãn**: Log mỗi request đều hiển thị `[Worker N]` để theo dõi worker nào đang xử lý ID nào. Hỗ trợ từ **1 đến 20 workers** đồng thời.
-- **Cung cấp public API `run_product_ids()`**: Cho phép các module khác (như `src/main.py`) gọi trực tiếp engine với danh sách ID tùy chỉnh, tái sử dụng toàn bộ logic retry/checkpoint.
-- **Cơ chế Checkpoint đa lớp**:
-  - `products_output.jsonl`: Append từng bản ghi và `fsync` ngay lập tức chống mất dữ liệu khi crash/tắt đột ngột.
-  - `products_output.progress.txt`: Tập hợp ID đã thành công giúp Resume tức thì mà không cần duyệt lại JSON lớn.
-  - `products_output.json`: File tổng hợp được cập nhật bằng cơ chế **Atomic Write** (ghi ra `.tmp` rồi rename/replace), đảm bảo không bao giờ bị corrupt.
-  - `products_output.retry.json`: Quản lý số lần thử (`attempts`), lý do lỗi (`reason`), thời điểm retry (`next_retry_at`) và cooldown toàn cục (`_global`).
-  - `products_output.failed_permanent.json`: Tách riêng các ID không thể cào (404, payload sai định dạng, đã hết lượt retry).
-  - `products_output.stats.json`: Ghi nhận và tích lũy tổng thời gian cào qua nhiều lần chạy, tính tốc độ trung bình.
-
-#### 2. Batch Streaming Engine (`src/main.py`)
-- **Tự động chia file theo Batch**: Cứ mỗi `--batch-size` (mặc định 1,000) sản phẩm sẽ đóng gói thành một file riêng (`products_part_0001.json`, `products_part_0002.json`, ...) trong thư mục `data/output/concurrency/parts/` (hoặc `data/output/retry_passX/parts/`).
-- **Log trạng thái chi tiết từng batch**: Trước và sau mỗi batch đều in ra số lượng `success`, `permanent_failed`, `due`, `pending_retry` và `cooldown` để theo dõi tiến độ toàn pipeline.
-- **Tích hợp Adaptive Stepped Backoff**: Tự động xử lý thông minh khi hết cooldown WAF, không cần con người can thiệp.
-
-#### 3. Sequential Engine (`fetch_tiki_products_sequential.py`)
-- **Cào tuần tự từng sản phẩm**: Sử dụng để debug sâu, kiểm tra phản hồi header/body chi tiết của server Tiki khi gặp lỗi.
-
----
-
-## 📋 3. Quy chuẩn dữ liệu đầu ra & Làm sạch HTML
-
-Mỗi bản ghi sản phẩm được lưu trữ theo cấu trúc chuẩn JSON sau:
-
-```json
-{
-  "id": 138083218,
-  "name": "Đồ Chơi Xếp Hình MyndToys - My First Learning (Cho Bé Từ 2.5 Tuổi - Nhiều Chủ Đề)",
-  "url_key": "do-choi-xep-hinh-myndtoys-my-first-learning-cho-be-tu-2-5-tuoi-nhieu-chu-de-p138083218",
-  "price": 268000,
-  "description": "Đồ Chơi Xếp Hình MyndToys - My First Learning (Cho Bé Từ 2.5 Tuổi - Nhiều Chủ Đề)\n\nĐặc điểm nổi bật:\n- Chất liệu gỗ an toàn cho bé\n- Giúp phát triển tư duy logic",
-  "images_url": [
-    "https://salt.tikicdn.com/media/catalog/product/f5/15/2228f38cf84d1b8451bb49e2c4537081.png"
-  ]
-}
-```
-
-### Quy trình chuẩn hóa `description` trong `cleaner.py`:
-- **Loại bỏ thẻ rác**: Xóa sạch toàn bộ thẻ `<script>`, `<style>`, `<iframe>` cùng nội dung bên trong.
-- **Bóc tách khối HTML**: Chuyển các thẻ khối (`<p>`, `<div>`, `<li>`, `<h1>`-`<h6>`, `<br>`) thành dấu xuống dòng `\n` có nghĩa.
-- **Giải mã HTML Entities**: Chuyển đổi các ký tự mã hóa như `&nbsp;`, `&amp;`, `&quot;`, `&lt;`, `&gt;`, `&#39;` thành ký tự văn bản thông thường.
-- **Làm sạch khoảng trắng**: Loại bỏ khoảng trắng không ngắt (`\xa0`, `\u200b`), chuẩn hóa khoảng trắng thừa giữa các dòng và đoạn văn.
-
----
-
-## ⚠️ 4. Bảng phân loại & Xử lý các trường hợp lỗi
-
-Mọi phản hồi từ Tiki API đều được phân loại nghiêm ngặt thành **3 nhóm trạng thái**:
-
-| Nhóm | Mã `reason` ghi nhận | Nguyên nhân chi tiết | Cơ chế xử lý & Retry | File lưu trữ |
-| :--- | :--- | :--- | :--- | :--- |
-| **`challenge`** | `html_security_challenge` | BytePlus / Tiki WAF phát hiện bot, trả về trang HTML chứa Security Check/Captcha thay vì JSON. | Ngắt toàn bộ worker ngay lập tức (`stop_event`), bật `_global` cooldown theo chuỗi **5p -> 15p -> 30p -> 1h**. | `*.retry.json` (`_global` & ID) |
-| **`retry`** | `http_429` | Bị Rate Limit do tần suất request quá nhanh. | Đọc header `Retry-After` (nếu có) hoặc dùng backoff `5p -> 15p -> 30p -> 1h`. | `*.retry.json` |
-| **`retry`** | `http_403` | Bị từ chối truy cập tạm thời. | Ưu tiên `Retry-After` hoặc exponential backoff. | `*.retry.json` |
-| **`retry`** | `http_500`, `http_502`, `http_503`, `http_504` | Lỗi máy chủ phía Tiki bị quá tải hoặc gián đoạn dịch vụ. | Chờ server phục hồi theo `Retry-After` hoặc backoff. | `*.retry.json` |
-| **`retry`** | `timeout` | Quá thời gian timeout khi gọi HTTP (mạng chập chờn, server không phản hồi). | Tăng số lần thử (`attempts`), đưa vào hàng đợi chờ thử lại. | `*.retry.json` |
-| **`retry`** | `ClientConnectorError`, `ServerDisconnectedError`,... | Lỗi kết nối mạng vật lý hoặc đứt socket từ `aiohttp`. | Ghi nhận tên Exception (`type(exc).__name__`), đưa vào retry. | `*.retry.json` |
-| **`retry`** | `invalid_content_type` | Mã HTTP 200 nhưng header `Content-Type` không chứa `json`. | Thử lại theo chu kỳ backoff. | `*.retry.json` |
-| **`retry`** | `invalid_json` | Body trả về bị cắt ngắn hoặc hỏng không parse được bằng `json.loads()`. | Thử lại theo chu kỳ backoff. | `*.retry.json` |
-| **`retry`** | `soft_block_missing_fields:<field>` | HTTP 200 nhưng JSON thiếu các field bắt buộc (`id`, `name`, `price`) — WAF trả payload giả để đánh lừa crawler. | Tăng `attempts`, thử lại thận trọng theo backoff. | `*.retry.json` |
-| **`terminal`** | `http_404` | Sản phẩm không tồn tại hoặc đã bị xóa vĩnh viễn khỏi Tiki. | **Không thử lại**, đánh dấu lỗi vĩnh viễn. | `*.failed_permanent.json` |
-| **`terminal`** | `invalid_product_payload` | JSON parse thành công nhưng không phải kiểu `dict` hoặc không có field `id`. | **Không thử lại**, đánh dấu lỗi vĩnh viễn. | `*.failed_permanent.json` |
-| **`terminal`** | `http_<status>` *(400, 401,...)* | Các mã lỗi HTTP client bất thường khác. | **Không thử lại**, đánh dấu lỗi vĩnh viễn. | `*.failed_permanent.json` |
-| **`retry`** | *Vượt số mốc backoff* | Lỗi tạm thời kéo dài, ví dụ mạng rớt hoặc WAF dai dẳng. | Tiếp tục giữ trong retry queue và hẹn lại sau mốc cuối **1 tiếng**, không chuyển permanent nếu lỗi còn retry được. | `*.retry.json` |
-
----
-
-### ⏱️ Cơ chế WAF Adaptive Stepped Backoff (Tối ưu hóa thời gian quét lại)
-
-Khi hệ thống gặp BytePlus Security Challenge từ Tiki, thay vì retry ngay hoặc chờ cứng một mốc duy nhất, crawler áp dụng chuỗi **Stepped Backoff**:
-
-#### Nguyên lý:
-- Lần WAF đầu tiên: hẹn `_global` cooldown **5 phút**.
-- Nếu chạy lại vẫn dính WAF: tăng lên **15 phút**, rồi **30 phút**, rồi **1 tiếng**.
-- Sau mốc **1 tiếng**, các lần sau tiếp tục giữ **1 tiếng**.
-- `main.py --auto-wait` sẽ ngủ chờ theo cooldown rồi tự chạy tiếp.
-- Daemon runner sẽ tự khởi động lại `main.py` sau mỗi vòng thoát để vét các ID retry đã đến hạn.
-
-#### 2. Bảng tham chiếu thời gian Adaptive Backoff:
-| Lượt kiểm tra | Thời gian chờ (Interval) | Trạng thái / Hành động |
-| :--- | :--- | :--- |
-| **1** | **5 phút** | Dừng lượt crawl hiện tại, hẹn retry |
-| **2** | **15 phút** | WAF vẫn còn, giãn cách mạnh hơn |
-| **3** | **30 phút** | Tiếp tục giữ nhịp thấp |
-| **4+** | **60 phút** | Cố định 1 tiếng cho tới khi WAF clear |
-| **Thành công** | **Resume bình thường** | Tiếp tục batch theo `progress/retry` đã lưu |
-
----
-
-## 🚀 5. Hướng dẫn cài đặt & Cách chạy Source Code
-
-### Bước 1: Chuẩn bị môi trường
-
-```bash
-# Tạo môi trường ảo Python
-python3 -m venv venv
-
-# Kích hoạt môi trường ảo
-source venv/bin/activate
-
-# Cài đặt các thư viện cần thiết
-pip install -r requirements.txt
-```
-
----
-
-### Bước 2: Chạy Concurrency Engine (`fetch_tiki_products.py`)
-
-#### 1. Chạy thử nghiệm với 10 sản phẩm mẫu:
-```bash
-python3 fetch_tiki_products.py \
-  --input data/input/product_ids_10.txt \
-  --output data/output/concurrency/products_output.json \
-  --concurrency 1 \
-  --delay-min 2.0 \
-  --delay-max 5.0
-```
-
-#### 2. Chạy chính thức toàn bộ 200,000 sản phẩm:
-```bash
-python3 fetch_tiki_products.py \
-  --input data/input/product_ids.txt \
-  --output data/output/concurrency/products_output.json \
-  --concurrency 20 \
-  --delay-min 0.3 \
-  --delay-max 1.0
-```
-
-#### 📌 Danh sách các tham số CLI của `fetch_tiki_products.py`:
-| Tham số | Kiểu dữ liệu | Mặc định | Mô tả |
-| :--- | :--- | :--- | :--- |
-| `--input` | `Path` | `data/input/product_ids.txt` | Đường dẫn file danh sách ID đầu vào |
-| `--output` | `Path` | `data/output/concurrency/products_output.json` | Đường dẫn file kết quả JSON |
-| `--limit` | `int` | `0` *(lấy hết)* | Giới hạn số lượng ID cần xử lý (vd: `--limit 500`) |
-| `--concurrency` | `int` | **`20`** *(1-20)* | Số worker bất đồng bộ chạy song song |
-| `--delay-min` | `float` | `2.0` | Thời gian giãn cách tối thiểu giữa các request (giây) |
-| `--delay-max` | `float` | `8.0` | Thời gian giãn cách tối đa giữa các request (giây) |
-| `--timeout` | `float` | `20.0` | Thời gian timeout cho mỗi request (giây) |
-| `--worker-url` | `str` | `None` *(Tiki API)* | URL Cloudflare Worker Edge Proxy (vd: `https://tiki-proxy-worker.tyanh185.workers.dev`) |
-| `--cookie-file` | `Path` | `None` | File browser session/cookie lấy từ Selenium |
-
----
-
-### Bước 3: Chạy Sequential Engine (`fetch_tiki_products_sequential.py`)
-
-Dùng để cào tuần tự từng sản phẩm phục vụ kiểm tra lỗi:
-
-```bash
-python3 fetch_tiki_products_sequential.py \
-  --input data/input/product_ids_10.txt \
-  --output data/output/squential/products_sequential_output.json \
-  --delay-min 0.8 \
-  --delay-max 2.0
-```
-
----
-
-### Bước 4: Chạy Batch Streaming Engine (`main.py`)
-
-Dùng khi cần tự động phân tách kết quả thành nhiều file nhỏ (mỗi file chứa 1,000 sản phẩm, lưu tại `data/output/concurrency/parts/`):
-
-```bash
-python3 main.py \
-  --input data/input/product_ids.txt \
-  --output-dir data/output/concurrency/parts \
-  --concurrency 20 \
-  --batch-size 1000 \
-  --start-batch 1 \
-  --end-batch 0 \
-  --delay-min 0.3 \
-  --delay-max 1.0
-```
-
-#### ⚡ Chạy Hybrid song song 2 Process (Tiki Direct + Cloudflare Worker Proxy):
-Tận dụng 2 dải IP riêng biệt để cào 200,000 ID không bị WAF/Rate limit:
-
-```bash
-# Process 1: 100k ID đầu chạy trực tiếp Tiki API (IP mạng nhà)
-python3 main.py \
+./runners/run_selenium_worker_daemon.sh --name tiki_part1_direct -- \
   --input data/input/product_ids_part1.txt \
-  --output-dir data/output/concurrency/parts \
-  --concurrency 10 \
-  --delay-min 1.0 \
-  --delay-max 3.0
-
-# Process 2: 100k ID sau chạy qua Cloudflare Worker Edge Proxy (IP Cloudflare)
-python3 main.py \
-  --input data/input/product_ids_part2.txt \
-  --output-dir data/output/concurrency/parts \
-  --concurrency 15 \
-  --delay-min 1.0 \
-  --delay-max 3.0 \
-  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev
-```
-
-Trong PyCharm: tạo 2 Run Configuration kiểu Python, chọn script `main.py`, bật **Allow parallel run**, rồi điền tương ứng vào ô `Parameters`.
-
-#### 🧪 Thử nghiệm Selenium + Cloudflare Worker
-
-Selenium chỉ dùng để lấy cookie/user-agent từ Chrome thật. Luồng cào chính vẫn dùng `aiohttp` để giữ tốc độ, resume và batch output.
-
-```bash
-# Cài phần phụ thuộc Selenium cho nhánh thử nghiệm
-./venv/bin/python -m pip install -r requirements-selenium.txt
-
-# Mở Chrome, vào Tiki/API/Worker mẫu và lưu session
-./venv/bin/python tools/capture_tiki_browser_session.py \
-  --output data/session/tiki_browser_session.json \
-  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
-  --wait-seconds 8
-
-# Chạy crawler qua Worker kèm cookie vừa capture
-./venv/bin/python src/main.py \
-  --input data/input/product_ids_part2.txt \
-  --output-dir data/output/concurrency/parts \
+  --output-dir data/output/selenium_worker_test/part1_parts \
+  --batch-size 1000 \
   --concurrency 10 \
   --delay-min 0.8 \
   --delay-max 2.0 \
-  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
   --cookie-file data/session/tiki_browser_session.json
 ```
 
-Nếu Cloudflare Worker không forward header `Cookie` về Tiki thì `--cookie-file` sẽ không có tác dụng ở mode Worker; khi đó dùng cookie với Tiki Direct để kiểm chứng trước.
-
-#### Chạy ngầm kiểu daemon, tự resume
-
-Runner này chạy `main.py` trong background, bật `--auto-wait`, dùng `caffeinate` trên macOS để hạn chế sleep, và tự chạy lại mỗi 5 phút để vét các ID pending/retry đã đến hạn.
+### Process 2: Part 2, Qua Cloudflare Worker
 
 ```bash
 ./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
@@ -492,35 +124,78 @@ Runner này chạy `main.py` trong background, bật `--auto-wait`, dùng `caffe
   --cookie-file data/session/tiki_browser_session.json
 ```
 
-Theo dõi log:
+Không cho 2 process ghi cùng một `--output-dir`, vì batch `products_part_0001.json` sẽ bị trùng tên.
+
+## Cơ Chế Chạy Nền
+
+`run_selenium_worker_daemon.sh` sẽ:
+
+- chạy `src/main.py` trong background;
+- bật `PYTHONUNBUFFERED=1` để log ra nhanh hơn;
+- bật `--auto-wait`;
+- dùng `caffeinate -dimsu` trên macOS để hạn chế sleep;
+- nếu `main.py` thoát do lỗi mạng/process, ngủ 300 giây rồi chạy lại;
+- resume theo các file output đã có.
+
+Các file resume chính:
+
+```text
+products_part_0001.jsonl
+products_part_0001.progress.txt
+products_part_0001.retry.json
+products_part_0001.failed_permanent.json
+products_part_0001.stats.json
+```
+
+## WAF Backoff
+
+Khi gặp HTML challenge/WAF:
+
+```text
+5 phút -> 15 phút -> 30 phút -> 1 tiếng -> tiếp tục 1 tiếng
+```
+
+Crawler ghi cooldown toàn cục vào `*.retry.json` dưới key `_global`. Khi hết cooldown, `main.py` tự chạy tiếp nếu daemon còn hoạt động.
+
+## Theo Dõi
+
+Xem log:
 
 ```bash
 tail -f logs/tiki_worker.log
+tail -f logs/tiki_part1_direct.log
 ```
 
-Kiểm tra daemon còn sống:
+Kiểm tra PID:
 
 ```bash
 cat logs/tiki_worker.pid
-ps -p $(cat logs/tiki_worker.pid) -o pid,ppid,etime,stat,command
-pgrep -fl "src/main.py|caffeinate|run_selenium_worker_daemon|tiki_worker"
+cat logs/tiki_part1_direct.pid
 ```
 
-Kiểm tra output có đang tăng không:
+Kiểm tra process:
 
 ```bash
-wc -l data/output/selenium_worker_test/parts/products_part_0002.jsonl
-stat -f '%Sm %N' data/output/selenium_worker_test/parts/products_part_0002.jsonl
+ps -p $(cat logs/tiki_worker.pid) -o pid,ppid,etime,stat,command
+ps -p $(cat logs/tiki_part1_direct.pid) -o pid,ppid,etime,stat,command
+pgrep -fl "src/main.py|caffeinate|run_selenium_worker_daemon|tiki_worker|tiki_part1_direct"
 ```
 
-Kiểm tra batch đang có retry/cooldown WAF không:
+Kiểm tra output có tăng không:
+
+```bash
+wc -l data/output/selenium_worker_test/parts/products_part_0004.jsonl
+wc -l data/output/selenium_worker_test/part1_parts/products_part_0001.jsonl
+```
+
+Kiểm tra batch có cooldown WAF không:
 
 ```bash
 ./venv/bin/python - <<'PY'
 import json, time
 from pathlib import Path
 
-retry_file = Path("data/output/selenium_worker_test/parts/products_part_0002.retry.json")
+retry_file = Path("data/output/selenium_worker_test/parts/products_part_0004.retry.json")
 if not retry_file.exists():
     print("Chưa có retry file")
 else:
@@ -537,226 +212,33 @@ else:
 PY
 ```
 
-Lưu ý: log của process background có thể bị buffer, nên `tail -f logs/tiki_worker.log` đôi khi chưa hiện ngay từng dòng `[OK]`. Khi đó kiểm tra timestamp và số dòng `.jsonl/.progress.txt` sẽ phản ánh tiến độ chính xác hơn.
-
-Dừng daemon:
+## Dừng Daemon
 
 ```bash
 ./runners/stop_selenium_worker_daemon.sh --name tiki_worker
+./runners/stop_selenium_worker_daemon.sh --name tiki_part1_direct
 ```
 
-WAF/challenge được hẹn lại theo chuỗi `5 phút -> 15 phút -> 30 phút -> 1 tiếng`, sau đó giữ mốc `1 tiếng` cho các lần tiếp theo. Nếu macOS thật sự sleep hoặc mất mạng, process sẽ tạm dừng/lỗi tạm thời; khi máy/mạng ổn lại, runner tiếp tục vòng resume theo output/retry/progress đã lưu.
+## Chạy Lại / Resume
 
----
+Chạy lại đúng lệnh cũ, giữ nguyên:
 
-### Bước 5: Chạy Auto-Convergence Pipeline
+- `--input`
+- `--output-dir`
+- `--batch-size`
 
-Chạy toàn bộ Phase 1 đến Phase N bằng một lệnh. Mỗi run có output, input phase, log và state riêng dưới `auto_runs/<run_id>`, nên không trộn với dữ liệu cũ.
+Crawler sẽ tự bỏ qua ID đã có trong `.progress.txt`, giữ lỗi tạm thời trong `.retry.json`, và tiếp tục xử lý các ID đến hạn.
 
-```bash
-# Smoke test, mặc định 50 ID và 5 worker process
-./runners/auto_pipeline.sh --test 50 --run-id smoke_50
+## Lưu Ý
 
-# Chạy toàn bộ input
-./runners/auto_pipeline.sh --full --run-id full_$(date +%Y%m%d_%H%M%S)
+- Nếu gập máy làm macOS sleep sâu, process có thể tạm dừng trong lúc sleep. Khi mở máy/mạng ổn lại, daemon tiếp tục vòng resume.
+- Nếu muốn chạy 24/7 thật sự, nên chạy trên VPS thay vì laptop.
+- Nếu Cloudflare Worker không forward `Cookie` header về Tiki, `--cookie-file` ở mode Worker có thể không tạo khác biệt. Khi đó kiểm chứng bằng Tiki Direct trước.
+- Không tăng concurrency quá nhanh. Mốc thử hiện tại: `--concurrency 10`, `--delay-min 0.8`, `--delay-max 2.0`.
 
-# Theo dõi hoặc dừng một run
-python3 monitor/check_auto_pipeline.py --run-id smoke_50
-./runners/stop_auto_pipeline.sh --run-id smoke_50
-```
-
-Pipeline dừng khi không còn ID lỗi hoặc tập ID lỗi giữa hai phase liên tiếp giống hệt nhau. Nếu worker lỗi, run chuyển sang `failed`; có thể tiếp tục run đã dừng bằng `--resume --run-id <run_id>`. Giới hạn mặc định là 5 phase, thay đổi bằng `--max-phases`.
-
-### Bước 6: Chạy Phase 1 - Cào chính 200,000 ID
-
-Khởi chạy 5 tiến trình song song qua 5 Cloudflare Worker Edge Proxies, chia đều 200 batches (1,000 items/batch):
-
-#### 1. Khởi chạy 5 Process song song:
-```bash
-bash runners/phase1/run.sh
-# Hoặc dùng script tương thích cũ tại thư mục gốc:
-./run_all.sh
-```
-* Tự động kiểm tra kết nối Internet trước khi kích hoạt.
-* 5 tiến trình chạy nền độc lập:
-  - **Process 1:** Batch 0001 – 0040 qua `tiki-proxy-worker-1` (Log: `logs/p1.log`)
-  - **Process 2:** Batch 0041 – 0080 qua `tiki-proxy-worker-2` (Log: `logs/p2.log`)
-  - **Process 3:** Batch 0081 – 0120 qua `tiki-proxy-worker-3` (Log: `logs/p3.log`)
-  - **Process 4:** Batch 0121 – 0160 qua `tiki-proxy-worker-4` (Log: `logs/p4.log`)
-  - **Process 5:** Batch 0161 – 0200 qua `tiki-proxy-worker-5` (Log: `logs/p5.log`)
-
-#### 2. Theo dõi Dashboard Phase 1 thời gian thực:
-```bash
-python3 monitor/check_status.py
-# Hoặc:
-python3 monitor/check_retry_pass1_status.py
-```
-
-#### 3. Dừng khẩn cấp toàn bộ tiến trình Phase 1:
-```bash
-bash runners/phase1/stop.sh
-# Hoặc:
-./stop_all.sh
-```
-
----
-
-### Bước 6: Chiến lược Quét vét lỗi đa tầng (Phase 2 -> 3 -> 4) & Generic Runner
-
-Sau mỗi Phase, những ID chưa lấy được (WAF challenge, timeout hoặc HTTP 404) được trích xuất sang file input riêng biệt để cào lại ở Phase tiếp theo. Kết quả của mỗi Phase được **lưu cách ly trong thư mục riêng** (`data/output/retry_passX/parts/`), đảm bảo an toàn tuyệt đối, không đè hay làm hỏng dữ liệu của các phase trước.
-
-#### 🎯 Tùy chọn A: Dùng Generic Retry Runner (Khuyến nghị cho mọi Phase)
-Hệ thống cung cấp runner đa năng `runners/retry.sh` và dashboard `monitor/check_retry.py` tự động tính toán batch, chia đều cho 5 proxies:
+## Test
 
 ```bash
-# 1. Chạy quét vét Phase bất kỳ (ví dụ Phase 3 hoặc Phase 4):
-bash runners/retry.sh --phase 4
-
-# 2. Mở Dashboard giám sát trực quan thời gian thực:
-python3 monitor/check_retry.py --phase 4
-
-# Chế độ theo dõi liên tục tự refresh màn hình:
-python3 monitor/check_retry.py --phase 4 --watch
-
-# 3. Dừng an toàn tiến trình retry đang chạy:
-bash runners/stop_retry.sh
-```
-
-#### 🎯 Tùy chọn B: Chạy qua các Runner chuyên biệt từng Phase
-```bash
-# --- PHASE 2: Quét vét 94,307 ID lỗi sau Phase 1 ---
-bash runners/phase2/run.sh
-python3 monitor/check_retry_pass2_status.py
-bash runners/phase2/stop.sh
-
-# --- PHASE 3: Quét vét 83,804 ID lỗi sau Phase 2 ---
-bash runners/phase3/run.sh
-python3 monitor/check_retry_pass3_status.py
-bash runners/phase3/stop.sh
-
-# --- PHASE 4: Quét vét 75,701 ID lỗi sau Phase 3 ---
-bash runners/phase4/run.sh
-python3 monitor/check_retry_pass4_status.py
-bash runners/phase4/stop.sh
-```
-
----
-
-### Bước 7: Hợp nhất Toàn diện (Master Merge & Deduplication)
-
-Thay thế hoàn toàn các thao tác đối chiếu thủ công rời rạc, script `tools/merge_parts.py` là pipeline tự động hóa hợp nhất dữ liệu từ tất cả các giai đoạn:
-
-```bash
-python3 tools/merge_parts.py
-```
-
-#### 🌟 Các tính năng vượt trội của Master Merge:
-1. **Dynamic Parts Discovery:** Tự động quét và nhận diện tất cả thư mục `concurrency/parts` và `retry_*/parts` (Phase 1, 2, 3, 4, ...) mà không cần cấu hình cứng.
-2. **Khử trùng lặp ID (Deduplication):** Tự động lọc trùng chéo giữa các Phase, ưu tiên ghi đè bản ghi mới nhất.
-3. **Đồng bộ lỗi 404 thực tế:** Đối chiếu với 200,000 ID gốc để xác định danh sách 404 còn tồn đọng chính xác.
-4. **Xuất bản đa định dạng (3-in-1 Export):**
-   - File JSON tổng hợp: `data/output/concurrency/products_output.json` (Atomic Write chống corrupt).
-   - File JSONL stream: `data/output/concurrency/products_output.jsonl`.
-   - File CSV hoàn chỉnh: `data/output/all_products.csv`.
-   - Danh sách 404: `data/output/concurrency/products_output.failed_permanent.json`.
-
----
-
-### Bước 8: Chạy ngầm tự động qua macOS LaunchAgent Daemon
-
-Dự án hỗ trợ chạy ngầm cấp hệ thống qua Launchd ([`scripts/setup_retry_daemon.sh`](file:///Users/lyxuanthanh/Documents/DataEngineer/Project_2/scripts/setup_retry_daemon.sh)):
-
-```bash
-# Cài đặt daemon tự chạy ngầm khi mở máy:
-bash scripts/setup_retry_daemon.sh install
-
-# Xem trạng thái daemon:
-bash scripts/setup_retry_daemon.sh status
-
-# Tạm dừng / Khởi động lại:
-bash scripts/setup_retry_daemon.sh stop
-bash scripts/setup_retry_daemon.sh start
-
-# Gỡ bỏ daemon:
-bash scripts/setup_retry_daemon.sh uninstall
-```
-
-* **Cơ chế tự phục hồi (Self-Healing):**
-  - `RunAtLoad = true`: Mở máy hoặc đăng nhập là tự động chạy ngầm.
-  - `KeepAlive.SuccessfulExit = false`: Nếu máy sleep, tắt WiFi hoặc crash, macOS tự khởi động lại crawler sau 15 giây.
-  - Khi hoàn tất 100% (exit 0), daemon tự động dừng hẳn.
-
----
-
-## 📊 6. Báo cáo kết quả & Thống kê thời gian cào chi tiết
-
-### 🏆 Tổng kết Toàn diện Dự án (200,000 Product IDs)
-
-Dự án đã giải quyết sạch **100% (200,000 / 200,000 ID)** qua 4 Phase quét vét:
-
-| Chỉ số | Số lượng | Tỷ lệ (%) | Ghi chú |
-| :--- | :---: | :---: | :--- |
-| **Tổng ID đầu vào** | **200,000** | **100.00%** | Danh sách ID Tiki gốc |
-| **Sản phẩm sạch thu được** | **124,299** | **62.15%** | Đã làm sạch HTML, bóc tách đầy đủ cấu trúc |
-| **Lỗi vĩnh viễn (True 404)** | **75,701** | **37.85%** | Sản phẩm đã bị xóa hoặc link không tồn tại trên Tiki |
-| **Tỷ lệ trùng lặp dữ liệu** | **0** | **0.00%** | Dữ liệu được deduplicate tuyệt đối qua set |
-| **Dung lượng File JSON** | **313.1 MB** | — | `data/output/concurrency/products_output.json` |
-| **Dung lượng File CSV** | **292.0 MB** | — | `data/output/all_products.csv` |
-
----
-
-### ⏱️ Thống kê Thời gian Cào thực tế (Active Parallel Runtime)
-
-Nhờ kiến trúc chạy song song **5 Process** qua **5 Cloudflare Worker Proxies**, thời gian cào thực tế (**Active Parallel Time**) được rút ngắn gấp 5 lần so với cào đơn luồng:
-
-| Giai đoạn | Số ID quét | SP sạch mới | Thời gian cào song song thực tế | Tổng giờ công CPU tích lũy |
-| :--- | :---: | :---: | :---: | :---: |
-| **Phase 1** (Cào chính) | 200,000 | 105,693 | **~21.45 giờ** | 124.0 giờ |
-| **Phase 2** (DLQ lần 1) | 94,307 | +10,503 | **8.14 giờ** | 33.7 giờ |
-| **Phase 3** (DLQ lần 2) | 83,804 | +8,103 | **10.23 giờ** | 50.5 giờ |
-| **Phase 4** (DLQ lần 3) | 75,701 | +0 *(100% 404)* | **10.72 giờ** | 50.0 giờ |
-| **TỔNG CỘNG** | **200,000** | **124,299** | **~50.5 giờ** *(~2.1 ngày cào thực tế)* | **258.2 giờ** *(~10.8 ngày CPU)* |
-
-> 📌 **Lưu ý về số đo thời gian:**
-> - **Thời gian cào thực tế (~50.5h):** Được tính toán chuẩn xác từ file `.stats.json` của từng batch, chỉ ghi nhận thời gian mạng và CPU thực sự gửi request cào dữ liệu, loại bỏ hoàn toàn các khoảng thời gian tắt máy, máy ngủ (sleep), hay thời gian chờ ngắt quãng giữa các lần khởi động lại tiến trình.
-> - **Thời gian trải dài theo lịch (~64.5h):** Là tổng thời gian từ lúc bấm lệnh Phase 1 (08/09) đến khi Phase 4 kết thúc (12/09), bao gồm cả thời gian gập máy nghỉ đêm.
-
----
-
-## 🛠️ 7. Xử lý sự cố (Troubleshooting)
-
-### 1. Xóa `_global` Cooldown sau khi đổi IP / VPN:
-Khi bị dính BytePlus Security Challenge, hệ thống sẽ tự động bật cooldown 1 giờ để bảo vệ IP. Sau khi bạn đã đổi IP mới (qua proxy/VPN/mạng khác), hãy xóa cooldown bằng lệnh:
-
-```bash
-python3 -c "
-import json
-p = 'data/output/concurrency/products_output.retry.json'
-try:
-    d = json.load(open(p))
-    d.pop('_global', None)
-    open(p, 'w').write(json.dumps(d, indent=2))
-    print('✅ Đã xóa _global cooldown thành công!')
-except Exception as e:
-    print('Lỗi:', e)
-"
-```
-
-### 2. Reset toàn bộ hàng đợi Retry:
-Nếu muốn thử lại tất cả các ID bị lỗi trước đó:
-```bash
-echo "{}" > data/output/concurrency/products_output.retry.json
-```
-
-### 3. Tiếp tục cào lại sau khi dừng (Resume):
-Chỉ cần chạy lại lệnh ban đầu, script sẽ tự động đọc `products_output.progress.txt` và bỏ qua tất cả các ID đã cào thành công.
-
----
-
-## 🧪 8. Chạy Unit Test
-
-Kiểm thử toàn bộ các module xử lý dữ liệu và logic cào:
-
-```bash
-python3 -m unittest discover tests
+./venv/bin/python -m compileall src tools tests
+PYTHONPATH=src ./venv/bin/python -m unittest tests.test_fetch_tiki_products
 ```
