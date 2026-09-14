@@ -83,7 +83,7 @@ mkdir -p "$PROJECT_DIR/logs"
 LOG_FILE="$PROJECT_DIR/logs/${RUN_NAME}.log"
 PID_FILE="$PROJECT_DIR/logs/${RUN_NAME}.pid"
 
-if [[ -f "$PID_FILE" ]]; then
+if [[ "$FOREGROUND" -eq 0 && -f "$PID_FILE" ]]; then
   OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
     echo "Run '$RUN_NAME' đang chạy với PID $OLD_PID"
