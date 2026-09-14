@@ -412,6 +412,47 @@ Theo dõi log:
 tail -f logs/tiki_worker.log
 ```
 
+Kiểm tra daemon còn sống:
+
+```bash
+cat logs/tiki_worker.pid
+ps -p $(cat logs/tiki_worker.pid) -o pid,ppid,etime,stat,command
+pgrep -fl "src/main.py|caffeinate|run_selenium_worker_daemon|tiki_worker"
+```
+
+Kiểm tra output có đang tăng không:
+
+```bash
+wc -l data/output/selenium_worker_test/parts/products_part_0002.jsonl
+stat -f '%Sm %N' data/output/selenium_worker_test/parts/products_part_0002.jsonl
+```
+
+Kiểm tra batch đang có retry/cooldown WAF không:
+
+```bash
+./venv/bin/python - <<'PY'
+import json, time
+from pathlib import Path
+
+retry_file = Path("data/output/selenium_worker_test/parts/products_part_0002.retry.json")
+if not retry_file.exists():
+    print("Chưa có retry file")
+else:
+    data = json.loads(retry_file.read_text(encoding="utf-8"))
+    retry_items = [k for k in data if k != "_global"]
+    global_state = data.get("_global")
+    print(f"retry_items={len(retry_items)}")
+    if global_state and global_state.get("next_retry_at"):
+        remaining = max(0, int(float(global_state["next_retry_at"]) - time.time() + 0.999))
+        print(f"global_cooldown={remaining}s")
+        print(f"reason={global_state.get('reason')}")
+    else:
+        print("global_cooldown=0s")
+PY
+```
+
+Lưu ý: log của process background có thể bị buffer, nên `tail -f logs/tiki_worker.log` đôi khi chưa hiện ngay từng dòng `[OK]`. Khi đó kiểm tra timestamp và số dòng `.jsonl/.progress.txt` sẽ phản ánh tiến độ chính xác hơn.
+
 Dừng daemon:
 
 ```bash
