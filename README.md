@@ -4,9 +4,12 @@ Hệ thống crawl và chuẩn hóa dữ liệu lớn cho **200,000 sản phẩm
 
 Dự án đã hoàn tất **100% (200,000 / 200,000 ID)** qua 4 Phase quét vét Dead Letter Queue (DLQ), thu thập thành công **124,299 sản phẩm sạch (62.15%)** và xác nhận chính xác **75,701 lỗi vĩnh viễn True 404 (37.85%)**.
 
+> Nhánh `selenium-worker-hybrid` là nhánh thử nghiệm riêng cho mô hình **Selenium Browser Session + Cloudflare Worker + aiohttp crawler**. Selenium không dùng để cào từng sản phẩm; Selenium chỉ lấy cookie/user-agent từ Chrome thật, còn crawler chính vẫn dùng API JSON để giữ tốc độ, checkpoint và resume.
+
 ---
 
 ## 📑 Mục Lục
+0. [Nhánh thử nghiệm Selenium Worker Hybrid](#0-nhánh-thử-nghiệm-selenium-worker-hybrid)
 1. [Cấu trúc thư mục dự án (Modular Architecture)](#1-cấu-trúc-thư-mục-dự-án-modular-architecture)
 2. [Kiến trúc & Sơ đồ luồng hệ thống End-to-End (4-Phase Pipeline)](#2-kiến-trúc--sơ-đồ-luồng-hệ-thống-end-to-end-4-phase-pipeline)
 3. [Quy chuẩn dữ liệu đầu ra & Làm sạch HTML](#3-quy-chuẩn-dữ-liệu-đầu-ra--làm-sạch-html)
@@ -20,6 +23,102 @@ Dự án đã hoàn tất **100% (200,000 / 200,000 ID)** qua 4 Phase quét vét
 6. [Báo cáo kết quả & Thống kê thời gian cào chi tiết](#6-báo-cáo-kết-quả--thống-kê-thời-gian-cào-chi-tiết)
 7. [Xử lý sự cố (Troubleshooting)](#7-xử-lý-sự-cố-troubleshooting)
 8. [Chạy Unit Test](#8-chạy-unit-test)
+
+---
+
+## 🧪 0. Nhánh thử nghiệm Selenium Worker Hybrid
+
+### Giới thiệu hệ thống
+
+Mục tiêu của nhánh này là kiểm chứng xem browser session thật có giúp crawler ổn định hơn khi đi qua Tiki API hoặc Cloudflare Worker hay không. Kiến trúc vẫn ưu tiên API JSON vì nhanh, nhẹ và dễ resume hơn nhiều so với mở trình duyệt cho từng sản phẩm.
+
+Mô hình vận hành:
+
+```mermaid
+flowchart LR
+    SEL["Selenium Chrome<br/>capture cookie + user-agent"]
+    SESSION["data/session/tiki_browser_session.json"]
+    MAIN["src/main.py<br/>batch orchestrator"]
+    FETCH["src/fetch_tiki_products.py<br/>aiohttp workers"]
+    WORKER["Cloudflare Worker<br/>optional proxy"]
+    TIKI["Tiki Product Detail API"]
+    OUT["parts/*.json + *.jsonl<br/>progress/retry/stats"]
+
+    SEL --> SESSION
+    SESSION --> MAIN
+    MAIN --> FETCH
+    FETCH --> WORKER
+    WORKER --> TIKI
+    FETCH --> TIKI
+    FETCH --> OUT
+```
+
+Các thành phần chính:
+
+| Thành phần | Vai trò |
+| :--- | :--- |
+| `tools/capture_tiki_browser_session.py` | Mở Chrome bằng Selenium, lấy `user_agent` và cookies |
+| `data/session/tiki_browser_session.json` | File session local, đã bị `.gitignore`, không push GitHub |
+| `src/main.py --cookie-file ...` | Chạy batch/resume và truyền browser session xuống engine |
+| `src/fetch_tiki_products.py` | Gọi API bằng `aiohttp`, gắn cookie/user-agent nếu có |
+| `--worker-url` | Chuyển request qua Cloudflare Worker thay vì gọi Tiki trực tiếp |
+| `runners/run_selenium_worker_daemon.sh` | Chạy nền, giữ máy thức bằng `caffeinate`, tự resume sau khi rớt mạng/process thoát |
+
+### Cách chạy nhanh
+
+1. Cài Selenium:
+
+```bash
+./venv/bin/python -m pip install -r requirements-selenium.txt
+```
+
+2. Capture browser session:
+
+```bash
+./venv/bin/python tools/capture_tiki_browser_session.py \
+  --output data/session/tiki_browser_session.json \
+  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --wait-seconds 8
+```
+
+3. Chạy nền crawler hybrid:
+
+```bash
+./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
+  --input data/input/product_ids_part2.txt \
+  --output-dir data/output/selenium_worker_test/parts \
+  --batch-size 1000 \
+  --concurrency 10 \
+  --delay-min 0.8 \
+  --delay-max 2.0 \
+  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --cookie-file data/session/tiki_browser_session.json
+```
+
+4. Theo dõi:
+
+```bash
+tail -f logs/tiki_worker.log
+wc -l data/output/selenium_worker_test/parts/products_part_0002.jsonl
+```
+
+5. Dừng:
+
+```bash
+./runners/stop_selenium_worker_daemon.sh --name tiki_worker
+```
+
+### Cơ chế chịu lỗi
+
+- Nếu gặp HTML/WAF challenge, crawler ghi `_global` cooldown vào `*.retry.json`.
+- Backoff WAF hiện theo chuỗi `5 phút -> 15 phút -> 30 phút -> 1 tiếng`, sau đó giữ `1 tiếng`.
+- Nếu rớt mạng, lỗi tạm thời vẫn nằm trong retry queue, không bị chuyển vĩnh viễn quá sớm.
+- Nếu process thoát, daemon ngủ `300s` rồi chạy lại `main.py`; `main.py` tự resume dựa vào `*.jsonl`, `*.progress.txt`, `*.retry.json`.
+- Nếu gập máy khiến macOS sleep sâu, process sẽ tạm dừng trong lúc sleep; khi mở máy/mạng ổn lại, runner tiếp tục vòng resume.
+
+### Khi nào dùng và không dùng Selenium
+
+Dùng Selenium khi cần bootstrap cookie/session thật hoặc kiểm chứng WAF. Không dùng Selenium để mở 200,000 trang sản phẩm, vì sẽ chậm hơn rất nhiều và vẫn có thể bị WAF nhận diện headless browser.
 
 ---
 
@@ -204,8 +303,8 @@ Mọi phản hồi từ Tiki API đều được phân loại nghiêm ngặt th�
 
 | Nhóm | Mã `reason` ghi nhận | Nguyên nhân chi tiết | Cơ chế xử lý & Retry | File lưu trữ |
 | :--- | :--- | :--- | :--- | :--- |
-| **`challenge`** | `html_security_challenge` | BytePlus / Tiki WAF phát hiện bot, trả về trang HTML chứa Security Check/Captcha thay vì JSON. | Ngắt toàn bộ worker ngay lập tức (`stop_event`), bật `_global` cooldown tối thiểu **3600s** (1 giờ) để chống bị ban IP nặng. | `*.retry.json` (`_global` & ID) |
-| **`retry`** | `http_429` | Bị Rate Limit do tần suất request quá nhanh. | Đọc header `Retry-After` (nếu có) hoặc kích hoạt Exponential Backoff (`30s, 120s, 600s`). | `*.retry.json` |
+| **`challenge`** | `html_security_challenge` | BytePlus / Tiki WAF phát hiện bot, trả về trang HTML chứa Security Check/Captcha thay vì JSON. | Ngắt toàn bộ worker ngay lập tức (`stop_event`), bật `_global` cooldown theo chuỗi **5p -> 15p -> 30p -> 1h**. | `*.retry.json` (`_global` & ID) |
+| **`retry`** | `http_429` | Bị Rate Limit do tần suất request quá nhanh. | Đọc header `Retry-After` (nếu có) hoặc dùng backoff `5p -> 15p -> 30p -> 1h`. | `*.retry.json` |
 | **`retry`** | `http_403` | Bị từ chối truy cập tạm thời. | Ưu tiên `Retry-After` hoặc exponential backoff. | `*.retry.json` |
 | **`retry`** | `http_500`, `http_502`, `http_503`, `http_504` | Lỗi máy chủ phía Tiki bị quá tải hoặc gián đoạn dịch vụ. | Chờ server phục hồi theo `Retry-After` hoặc backoff. | `*.retry.json` |
 | **`retry`** | `timeout` | Quá thời gian timeout khi gọi HTTP (mạng chập chờn, server không phản hồi). | Tăng số lần thử (`attempts`), đưa vào hàng đợi chờ thử lại. | `*.retry.json` |
@@ -216,42 +315,29 @@ Mọi phản hồi từ Tiki API đều được phân loại nghiêm ngặt th�
 | **`terminal`** | `http_404` | Sản phẩm không tồn tại hoặc đã bị xóa vĩnh viễn khỏi Tiki. | **Không thử lại**, đánh dấu lỗi vĩnh viễn. | `*.failed_permanent.json` |
 | **`terminal`** | `invalid_product_payload` | JSON parse thành công nhưng không phải kiểu `dict` hoặc không có field `id`. | **Không thử lại**, đánh dấu lỗi vĩnh viễn. | `*.failed_permanent.json` |
 | **`terminal`** | `http_<status>` *(400, 401,...)* | Các mã lỗi HTTP client bất thường khác. | **Không thử lại**, đánh dấu lỗi vĩnh viễn. | `*.failed_permanent.json` |
-| **`terminal`** | *Hết lượt retry (`attempts > 3`)* | Đã retry đủ số lần backoff tối đa mà vẫn tiếp tục lỗi. | Tự động chuyển từ retry queue sang danh sách lỗi vĩnh viễn. | `*.failed_permanent.json` |
+| **`retry`** | *Vượt số mốc backoff* | Lỗi tạm thời kéo dài, ví dụ mạng rớt hoặc WAF dai dẳng. | Tiếp tục giữ trong retry queue và hẹn lại sau mốc cuối **1 tiếng**, không chuyển permanent nếu lỗi còn retry được. | `*.retry.json` |
 
 ---
 
 ### ⏱️ Cơ chế WAF Adaptive Stepped Backoff (Tối ưu hóa thời gian quét lại)
 
-Khi hệ thống gặp BytePlus Security Challenge từ Tiki, thay vì chờ cứng 60 phút ở mọi lần hoặc liên tục bắn request khiến IP bị chặn vĩnh viễn, crawler áp dụng giải thuật **Adaptive Stepped Backoff** thông minh:
+Khi hệ thống gặp BytePlus Security Challenge từ Tiki, thay vì retry ngay hoặc chờ cứng một mốc duy nhất, crawler áp dụng chuỗi **Stepped Backoff**:
 
-#### 1. Nguyên lý 2 giai đoạn:
-- **Giai đoạn 1 (Cooldown chính):**
-  - Kích hoạt `_global` cooldown = **3,600 giây** (60 phút) ngay khi phát hiện HTML Security Challenge.
-  - Tiến trình ngủ ngắt quãng theo chu kỳ (mặc định 60s) để có thể nhận lệnh dừng (`SIGINT`/`SIGTERM`) mà không bị treo.
-- **Giai đoạn 2 (Adaptive Stepped Check sau Cooldown):**
-  - **3 Lần đầu tiên (Thử nghiệm nhanh):** Sau khi hết 60 phút cooldown chính, hệ thống kiểm tra với khoảng cách ngắn **3 đến 5 phút** (3m → 4m → 5m). Nếu WAF đã gỡ chặn, crawler lập tức tiếp tục cào ngay, tiết kiệm hàng chục phút chờ đợi không cần thiết.
-  - **Nếu sau 3 lần vẫn bị WAF:** Chuyển sang chu kỳ Stepped Backoff với các bước giãn cách tăng dần:
-    - **Bước 1:** Chờ **5 phút**
-    - **Bước 2:** Chờ **10 phút**
-    - **Bước 3:** Chờ **15 phút**
-    - **Bước 4:** Chờ **30 phút**
-    - **Bước 5+:** Cố định ở mức **60 phút** (giữ nguyên chu kỳ 60 phút cho tới khi WAF hoàn toàn clear).
-- **Cơ chế Auto-Reset:**
-  - Ngay khi có 1 lần kiểm tra thành công (WAF clear, nhận JSON hợp lệ), toàn bộ bộ đếm adaptive check và khoảng thời gian chờ được **tự động reset về mức 3 phút ban đầu**.
+#### Nguyên lý:
+- Lần WAF đầu tiên: hẹn `_global` cooldown **5 phút**.
+- Nếu chạy lại vẫn dính WAF: tăng lên **15 phút**, rồi **30 phút**, rồi **1 tiếng**.
+- Sau mốc **1 tiếng**, các lần sau tiếp tục giữ **1 tiếng**.
+- `main.py --auto-wait` sẽ ngủ chờ theo cooldown rồi tự chạy tiếp.
+- Daemon runner sẽ tự khởi động lại `main.py` sau mỗi vòng thoát để vét các ID retry đã đến hạn.
 
 #### 2. Bảng tham chiếu thời gian Adaptive Backoff:
 | Lượt kiểm tra | Thời gian chờ (Interval) | Trạng thái / Hành động |
 | :--- | :--- | :--- |
-| **Cooldown chính** | 3,600 giây (60 phút) | Ngủ bắt buộc sau khi dính BytePlus Challenge |
-| **Check 1** | **3 phút** | Kiểm tra nhanh lần 1 sau cooldown chính |
-| **Check 2** | **4 phút** | WAF vẫn chặn → Kiểm tra nhanh lần 2 |
-| **Check 3** | **5 phút** | WAF vẫn chặn → Kiểm tra nhanh lần 3 |
-| **Bước 1 (Stepped)** | **5 phút** | Chuyển sang Stepped Backoff bước 1 |
-| **Bước 2 (Stepped)** | **10 phút** | WAF dai dẳng → Giãn cách lên 10 phút |
-| **Bước 3 (Stepped)** | **15 phút** | Giãn cách lên 15 phút |
-| **Bước 4 (Stepped)** | **30 phút** | Giãn cách lên 30 phút |
-| **Bước 5+ (Stepped)**| **60 phút** | Cố định ở 60 phút lặp lại vô hạn đến khi mở |
-| **Thành công** | **Reset 3 phút** | Tự động reset bộ đếm về ban đầu |
+| **1** | **5 phút** | Dừng lượt crawl hiện tại, hẹn retry |
+| **2** | **15 phút** | WAF vẫn còn, giãn cách mạnh hơn |
+| **3** | **30 phút** | Tiếp tục giữ nhịp thấp |
+| **4+** | **60 phút** | Cố định 1 tiếng cho tới khi WAF clear |
+| **Thành công** | **Resume bình thường** | Tiếp tục batch theo `progress/retry` đã lưu |
 
 ---
 
