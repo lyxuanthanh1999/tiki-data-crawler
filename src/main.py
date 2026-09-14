@@ -443,6 +443,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--cookie-file",
+        type=Path,
+        default=None,
+        help=(
+            "File session/cookie lấy từ Selenium. "
+            "Ví dụ: data/session/tiki_browser_session.json"
+        ),
+    )
+    parser.add_argument(
         "--auto-wait",
         dest="auto_wait",
         action="store_true",
@@ -643,6 +652,7 @@ def main():
                     delay_max=args.delay_max,
                     timeout=args.timeout,
                     worker_url=args.worker_url,
+                    cookie_file=args.cookie_file,
                 )
                 try:
                     asyncio.run(run_product_ids(batch, batch_args))

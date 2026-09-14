@@ -29,6 +29,51 @@ DEFAULT_INPUT = Path("data/input/product_ids.txt")
 DEFAULT_OUTPUT = Path("data/output/concurrency/products_output.json")
 
 
+def load_browser_session(cookie_file: Optional[Path]) -> tuple[dict[str, str], int]:
+    """
+    Đọc session đã capture từ Selenium và chuyển thành headers dùng cho aiohttp.
+
+    File kỳ vọng được tạo bởi tools/capture_tiki_browser_session.py:
+      {
+        "user_agent": "...",
+        "cookies": [{"name": "...", "value": "..."}]
+      }
+    """
+    if not cookie_file:
+        return {}, 0
+    if not cookie_file.exists():
+        raise FileNotFoundError(f"Không tìm thấy cookie file: {cookie_file}")
+
+    data = json.loads(cookie_file.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"Cookie file không đúng định dạng JSON object: {cookie_file}")
+
+    headers: dict[str, str] = {}
+    user_agent = data.get("user_agent")
+    if isinstance(user_agent, str) and user_agent.strip():
+        headers["User-Agent"] = user_agent.strip()
+
+    cookies = data.get("cookies", [])
+    cookie_pairs: list[str] = []
+    if isinstance(cookies, list):
+        seen: set[str] = set()
+        for cookie in cookies:
+            if not isinstance(cookie, dict):
+                continue
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if not isinstance(name, str) or not isinstance(value, str):
+                continue
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            cookie_pairs.append(f"{name}={value}")
+
+    if cookie_pairs:
+        headers["Cookie"] = "; ".join(cookie_pairs)
+    return headers, len(cookie_pairs)
+
+
 def format_duration_clock(seconds: float) -> str:
     total_seconds = int(round(max(0, seconds)))
     hours, remainder = divmod(total_seconds, 3600)
@@ -576,13 +621,18 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
     is_worker_mode = bool(worker_url)
 
     # Chọn headers phù hợp: Worker không cần Origin/Referer của Tiki
-    session_headers = DEFAULT_HEADERS if not is_worker_mode else {
+    session_headers = (DEFAULT_HEADERS.copy() if not is_worker_mode else {
         "Accept": "application/json, text/plain, */*",
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
-    }
+    })
+    session_file = getattr(args, "cookie_file", None)
+    session_header_overrides, cookie_count = load_browser_session(session_file)
+    session_headers.update(session_header_overrides)
 
     endpoint_label = f"☁️  Cloudflare Worker → {api_base_url}" if is_worker_mode else f"🎯 Tiki trực tiếp → {api_base_url}"
     print(f"🌐 API endpoint: {endpoint_label}")
+    if session_file:
+        print(f"🍪 Browser session: {session_file} ({cookie_count} cookies)")
 
     timeout = aiohttp.ClientTimeout(total=args.timeout)
     connector = aiohttp.TCPConnector(
@@ -703,6 +753,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "URL Cloudflare Worker Edge Proxy (bỏ trống = gọi trực tiếp Tiki API). "
             "Ví dụ: https://tiki-proxy-worker.tyanh185.workers.dev"
+        ),
+    )
+    parser.add_argument(
+        "--cookie-file",
+        type=Path,
+        default=None,
+        help=(
+            "File session/cookie lấy từ Selenium. "
+            "Ví dụ: data/session/tiki_browser_session.json"
         ),
     )
     args = parser.parse_args()

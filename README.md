@@ -305,6 +305,7 @@ python3 fetch_tiki_products.py \
 | `--delay-max` | `float` | `8.0` | Thời gian giãn cách tối đa giữa các request (giây) |
 | `--timeout` | `float` | `20.0` | Thời gian timeout cho mỗi request (giây) |
 | `--worker-url` | `str` | `None` *(Tiki API)* | URL Cloudflare Worker Edge Proxy (vd: `https://tiki-proxy-worker.tyanh185.workers.dev`) |
+| `--cookie-file` | `Path` | `None` | File browser session/cookie lấy từ Selenium |
 
 ---
 
@@ -361,6 +362,33 @@ python3 main.py \
 ```
 
 Trong PyCharm: tạo 2 Run Configuration kiểu Python, chọn script `main.py`, bật **Allow parallel run**, rồi điền tương ứng vào ô `Parameters`.
+
+#### 🧪 Thử nghiệm Selenium + Cloudflare Worker
+
+Selenium chỉ dùng để lấy cookie/user-agent từ Chrome thật. Luồng cào chính vẫn dùng `aiohttp` để giữ tốc độ, resume và batch output.
+
+```bash
+# Cài phần phụ thuộc Selenium cho nhánh thử nghiệm
+./venv/bin/python -m pip install -r requirements-selenium.txt
+
+# Mở Chrome, vào Tiki/API/Worker mẫu và lưu session
+./venv/bin/python tools/capture_tiki_browser_session.py \
+  --output data/session/tiki_browser_session.json \
+  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --wait-seconds 8
+
+# Chạy crawler qua Worker kèm cookie vừa capture
+./venv/bin/python src/main.py \
+  --input data/input/product_ids_part2.txt \
+  --output-dir data/output/concurrency/parts \
+  --concurrency 10 \
+  --delay-min 0.8 \
+  --delay-max 2.0 \
+  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --cookie-file data/session/tiki_browser_session.json
+```
+
+Nếu Cloudflare Worker không forward header `Cookie` về Tiki thì `--cookie-file` sẽ không có tác dụng ở mode Worker; khi đó dùng cookie với Tiki Direct để kiểm chứng trước.
 
 ---
 

@@ -5,10 +5,33 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fetch_tiki_products import ResultStore
+from fetch_tiki_products import ResultStore, load_browser_session
 
 
 class ResultStoreTests(unittest.IsolatedAsyncioTestCase):
+    def test_load_browser_session_builds_cookie_header(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookie_file = Path(temp_dir) / "session.json"
+            cookie_file.write_text(
+                json.dumps(
+                    {
+                        "user_agent": "Mozilla/5.0 Test",
+                        "cookies": [
+                            {"name": "a", "value": "1"},
+                            {"name": "b", "value": "2"},
+                            {"name": "a", "value": "ignored"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            headers, count = load_browser_session(cookie_file)
+
+            self.assertEqual(count, 2)
+            self.assertEqual(headers["User-Agent"], "Mozilla/5.0 Test")
+            self.assertEqual(headers["Cookie"], "a=1; b=2")
+
     async def test_product_is_durable_and_resumable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "products.json"
