@@ -15,11 +15,10 @@ import aiohttp
 from cleaner import extract_product_fields
 from config import DEFAULT_HEADERS, TIKI_API_BASE_URL
 
-# Thời gian chờ backoff (giây) theo cấp số nhân khi retry: lần 1 (30s), lần 2 (120s), lần 3 (600s)
-BACKOFF_SECONDS = (30, 120, 600)
-# Cooldown tối thiểu (giây) khi gặp WAF challenge mà đã hết lượt backoff.
-# Tránh bug vô hạn: script lao vào chạy ngay sau khi challenge vì next_retry_at = None.
-CHALLENGE_MIN_COOLDOWN = 3600
+# Thời gian chờ backoff cho lỗi tạm thời/WAF: 5p -> 15p -> 30p -> 1h.
+# Sau mốc cuối, crawler tiếp tục hẹn lại sau 1h thay vì đưa ID retryable vào failed permanent.
+BACKOFF_SECONDS = (300, 900, 1800, 3600)
+WAF_BACKOFF_SECONDS = (300, 900, 1800, 3600)
 # Các field bắt buộc trong raw API response để coi là sản phẩm hợp lệ (phát hiện "soft block").
 # LƯU Ý: chỉ dùng field có trong response gốc của API, KHÔNG dùng field được tạo sau khi xử lý
 # (vd: images_url được đổi tên từ 'images', description có thể rỗng hợp lệ).
@@ -313,8 +312,8 @@ class ResultStore:
         Ghi nhận thông tin thất bại của một request (Fix #4: bọc bằng self._lock):
         - Tăng số lần thử (attempts).
         - Ưu tiên dùng server_retry_after (header Retry-After) nếu có, thay vì BACKOFF_SECONDS (Fix #2).
-        - Nếu gặp challenge: đảm bảo luôn đặt global cooldown >= CHALLENGE_MIN_COOLDOWN (Fix #1).
-        - Nếu hết lượt retry: ghi ID vào failed_permanent (Fix #5).
+        - Nếu gặp challenge: đặt global cooldown theo chuỗi 5p -> 15p -> 30p -> 1h.
+        - Chỉ lỗi terminal mới ghi vào failed_permanent; lỗi retryable tiếp tục được hẹn lại.
         - Nếu stop_all: luôn thiết lập cooldown toàn cục _global (Fix #1).
 
         :return: Số giây cần chờ trước khi thử lại (0 nếu hết số lần thử hoặc không thể retry).
@@ -324,22 +323,24 @@ class ResultStore:
             previous_attempts = int(self.retry_state.get(key, {}).get("attempts", 0))
             attempts = previous_attempts + 1
 
-            # Fix #2: ưu tiên server_retry_after nếu server cung cấp
-            if server_retry_after is not None and retryable:
-                wait_seconds = server_retry_after
-                next_retry_at: Optional[float] = time.time() + wait_seconds
-            elif retryable and attempts <= len(BACKOFF_SECONDS):
-                wait_seconds = BACKOFF_SECONDS[attempts - 1]
-                next_retry_at = time.time() + wait_seconds
+            if retryable:
+                if stop_all:
+                    global_attempts = int(self.retry_state.get("_global", {}).get("attempts", 0)) + 1
+                    wait_seconds = WAF_BACKOFF_SECONDS[
+                        min(global_attempts - 1, len(WAF_BACKOFF_SECONDS) - 1)
+                    ]
+                    next_retry_at: Optional[float] = time.time() + wait_seconds
+                elif server_retry_after is not None:
+                    wait_seconds = server_retry_after
+                    next_retry_at = time.time() + wait_seconds
+                else:
+                    wait_seconds = BACKOFF_SECONDS[
+                        min(attempts - 1, len(BACKOFF_SECONDS) - 1)
+                    ]
+                    next_retry_at = time.time() + wait_seconds
             else:
                 wait_seconds = 0
                 next_retry_at = None
-
-            # Fix #1: khi challenge xảy ra và đã hết backoff định sẵn,
-            # đặt cooldown tối thiểu cố định thay vì để None → tránh lặp vô hạn
-            if stop_all:
-                wait_seconds = max(wait_seconds, CHALLENGE_MIN_COOLDOWN)
-                next_retry_at = time.time() + wait_seconds
 
             self.retry_state[key] = {
                 "attempts": attempts,
@@ -350,11 +351,13 @@ class ResultStore:
             # Fix #1: stop_all luôn ghi _global (không phụ thuộc next_retry_at is not None nữa)
             if stop_all:
                 self.retry_state["_global"] = {
+                    "attempts": int(self.retry_state.get("_global", {}).get("attempts", 0)) + 1,
                     "reason": reason,
                     "next_retry_at": next_retry_at,
                 }
 
-            # Fix #5: nếu hết lượt retry hoặc terminal → ghi vào failed_permanent
+            # Fix #5: chỉ lỗi terminal mới ghi vào failed_permanent.
+            # Lỗi retryable giữ trong retry queue để daemon có thể resume/vét lại sau.
             if next_retry_at is None:
                 self.failed_permanent[key] = {
                     "reason": reason,

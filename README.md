@@ -390,6 +390,36 @@ Selenium chỉ dùng để lấy cookie/user-agent từ Chrome thật. Luồng c
 
 Nếu Cloudflare Worker không forward header `Cookie` về Tiki thì `--cookie-file` sẽ không có tác dụng ở mode Worker; khi đó dùng cookie với Tiki Direct để kiểm chứng trước.
 
+#### Chạy ngầm kiểu daemon, tự resume
+
+Runner này chạy `main.py` trong background, bật `--auto-wait`, dùng `caffeinate` trên macOS để hạn chế sleep, và tự chạy lại mỗi 5 phút để vét các ID pending/retry đã đến hạn.
+
+```bash
+./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
+  --input data/input/product_ids_part2.txt \
+  --output-dir data/output/selenium_worker_test/parts \
+  --batch-size 1000 \
+  --concurrency 10 \
+  --delay-min 0.8 \
+  --delay-max 2.0 \
+  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --cookie-file data/session/tiki_browser_session.json
+```
+
+Theo dõi log:
+
+```bash
+tail -f logs/tiki_worker.log
+```
+
+Dừng daemon:
+
+```bash
+./runners/stop_selenium_worker_daemon.sh --name tiki_worker
+```
+
+WAF/challenge được hẹn lại theo chuỗi `5 phút -> 15 phút -> 30 phút -> 1 tiếng`, sau đó giữ mốc `1 tiếng` cho các lần tiếp theo. Nếu macOS thật sự sleep hoặc mất mạng, process sẽ tạm dừng/lỗi tạm thời; khi máy/mạng ổn lại, runner tiếp tục vòng resume theo output/retry/progress đã lưu.
+
 ---
 
 ### Bước 5: Chạy Auto-Convergence Pipeline

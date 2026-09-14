@@ -65,13 +65,26 @@ class ResultStoreTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(
                 await store.record_failure(123, "html_security_challenge", stop_all=True),
-                3600,
+                300,
             )
-            self.assertEqual(store.global_wait_remaining(), 3600)
+            self.assertEqual(store.global_wait_remaining(), 300)
             self.assertFalse(store.is_due(123))
 
             resumed = ResultStore(output)
-            self.assertEqual(resumed.global_wait_remaining(), 3600)
+            self.assertEqual(resumed.global_wait_remaining(), 300)
+
+    async def test_waf_backoff_escalates_to_one_hour(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "fetch_tiki_products.time.time", return_value=1000
+        ):
+            store = ResultStore(Path(temp_dir) / "products.json")
+
+            waits = [
+                await store.record_failure(pid, "html_security_challenge", stop_all=True)
+                for pid in [1, 2, 3, 4, 5]
+            ]
+
+            self.assertEqual(waits, [300, 900, 1800, 3600, 3600])
 
     async def test_terminal_failure_is_not_retried(self):
         with tempfile.TemporaryDirectory() as temp_dir:
