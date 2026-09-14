@@ -46,6 +46,7 @@ if [[ -z "$PID" ]]; then
 fi
 
 if kill -0 "$PID" 2>/dev/null; then
+  pkill -TERM -P "$PID" 2>/dev/null || true
   kill "$PID"
   echo "Đã gửi tín hiệu dừng cho '$RUN_NAME' PID $PID"
 else

@@ -11,6 +11,7 @@ export PYTHONUNBUFFERED=1
 RUN_NAME="selenium_worker_daemon"
 RESUME_INTERVAL=300
 USE_CAFFEINATE=1
+FOREGROUND=0
 MAIN_ARGS=()
 
 usage() {
@@ -22,6 +23,7 @@ Runner options:
   --name <name>              Tên log/pid file. Mặc định: selenium_worker_daemon
   --resume-interval <sec>    Sau khi main.py thoát, ngủ bao lâu rồi chạy lại. Mặc định: 300
   --no-caffeinate            Không dùng caffeinate để giữ macOS thức
+  --foreground               Chạy vòng daemon ở foreground (dùng nội bộ bởi nohup)
 
 Ví dụ:
   ./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
@@ -48,6 +50,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-caffeinate)
       USE_CAFFEINATE=0
+      shift
+      ;;
+    --foreground)
+      FOREGROUND=1
       shift
       ;;
     --help|-h)
@@ -86,53 +92,62 @@ if [[ -f "$PID_FILE" ]]; then
   fi
 fi
 
+if [[ "$FOREGROUND" -eq 0 ]]; then
+  RUNNER_ARGS=(--foreground --name "$RUN_NAME" --resume-interval "$RESUME_INTERVAL")
+  if [[ "$USE_CAFFEINATE" -eq 0 ]]; then
+    RUNNER_ARGS+=(--no-caffeinate)
+  fi
+
+  nohup "$0" "${RUNNER_ARGS[@]}" -- "${MAIN_ARGS[@]}" >> "$LOG_FILE" 2>&1 &
+  DAEMON_PID=$!
+  echo "$DAEMON_PID" > "$PID_FILE"
+
+  echo "Đã chạy ngầm: $RUN_NAME"
+  echo "PID: $DAEMON_PID"
+  echo "Log: $LOG_FILE"
+  echo "Theo dõi: tail -f \"$LOG_FILE\""
+  echo "Dừng: ./runners/stop_selenium_worker_daemon.sh --name \"$RUN_NAME\""
+  exit 0
+fi
+
 if [[ "$USE_CAFFEINATE" -eq 1 ]] && command -v caffeinate >/dev/null 2>&1; then
   WAKE_WRAPPER=(caffeinate -dimsu)
 else
   WAKE_WRAPPER=()
 fi
 
-(
-  echo "======================================================================"
-  echo "Start daemon: $(date '+%Y-%m-%d %H:%M:%S %z')"
-  echo "Run name    : $RUN_NAME"
-  echo "Python      : $PYTHON_BIN"
-  echo "Log         : $LOG_FILE"
-  echo "PID file    : $PID_FILE"
-  echo "Resume every: ${RESUME_INTERVAL}s"
-  echo "Caffeinate  : $([[ ${#WAKE_WRAPPER[@]} -gt 0 ]] && echo on || echo off)"
-  echo "======================================================================"
+trap 'echo "[$(date "+%Y-%m-%d %H:%M:%S %z")] Stop daemon"; exit 0' TERM INT
 
-  while true; do
-    echo
-    echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] Run main.py"
-    set +e
-    if [[ ${#WAKE_WRAPPER[@]} -gt 0 ]]; then
-      "${WAKE_WRAPPER[@]}" "$PYTHON_BIN" "$PROJECT_DIR/src/main.py" \
-        --auto-wait \
-        --auto-wait-interval 300 \
-        --max-waf-retries 0 \
-        "${MAIN_ARGS[@]}"
-    else
-      "$PYTHON_BIN" "$PROJECT_DIR/src/main.py" \
-        --auto-wait \
-        --auto-wait-interval 300 \
-        --max-waf-retries 0 \
-        "${MAIN_ARGS[@]}"
-    fi
-    EXIT_CODE=$?
-    set -e
-    echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] main.py exited with code $EXIT_CODE"
-    echo "Sleep ${RESUME_INTERVAL}s before resume scan..."
-    sleep "$RESUME_INTERVAL"
-  done
-) >> "$LOG_FILE" 2>&1 &
+echo "======================================================================"
+echo "Start daemon: $(date '+%Y-%m-%d %H:%M:%S %z')"
+echo "Run name    : $RUN_NAME"
+echo "Python      : $PYTHON_BIN"
+echo "Log         : $LOG_FILE"
+echo "PID file    : $PID_FILE"
+echo "Resume every: ${RESUME_INTERVAL}s"
+echo "Caffeinate  : $([[ ${#WAKE_WRAPPER[@]} -gt 0 ]] && echo on || echo off)"
+echo "======================================================================"
 
-DAEMON_PID=$!
-echo "$DAEMON_PID" > "$PID_FILE"
-
-echo "Đã chạy ngầm: $RUN_NAME"
-echo "PID: $DAEMON_PID"
-echo "Log: $LOG_FILE"
-echo "Theo dõi: tail -f \"$LOG_FILE\""
-echo "Dừng: ./runners/stop_selenium_worker_daemon.sh --name \"$RUN_NAME\""
+while true; do
+  echo
+  echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] Run main.py"
+  set +e
+  if [[ ${#WAKE_WRAPPER[@]} -gt 0 ]]; then
+    "${WAKE_WRAPPER[@]}" "$PYTHON_BIN" "$PROJECT_DIR/src/main.py" \
+      --auto-wait \
+      --auto-wait-interval 300 \
+      --max-waf-retries 0 \
+      "${MAIN_ARGS[@]}"
+  else
+    "$PYTHON_BIN" "$PROJECT_DIR/src/main.py" \
+      --auto-wait \
+      --auto-wait-interval 300 \
+      --max-waf-retries 0 \
+      "${MAIN_ARGS[@]}"
+  fi
+  EXIT_CODE=$?
+  set -e
+  echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] main.py exited with code $EXIT_CODE"
+  echo "Sleep ${RESUME_INTERVAL}s before resume scan..."
+  sleep "$RESUME_INTERVAL"
+done
