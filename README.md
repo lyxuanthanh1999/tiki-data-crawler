@@ -364,7 +364,25 @@ Trong PyCharm: tạo 2 Run Configuration kiểu Python, chọn script `main.py`,
 
 ---
 
-### Bước 5: Chạy Phase 1 - Cào chính 200,000 ID
+### Bước 5: Chạy Auto-Convergence Pipeline
+
+Chạy toàn bộ Phase 1 đến Phase N bằng một lệnh. Mỗi run có output, input phase, log và state riêng dưới `auto_runs/<run_id>`, nên không trộn với dữ liệu cũ.
+
+```bash
+# Smoke test, mặc định 50 ID và 5 worker process
+./runners/auto_pipeline.sh --test 50 --run-id smoke_50
+
+# Chạy toàn bộ input
+./runners/auto_pipeline.sh --full --run-id full_$(date +%Y%m%d_%H%M%S)
+
+# Theo dõi hoặc dừng một run
+python3 monitor/check_auto_pipeline.py --run-id smoke_50
+./runners/stop_auto_pipeline.sh --run-id smoke_50
+```
+
+Pipeline dừng khi không còn ID lỗi hoặc tập ID lỗi giữa hai phase liên tiếp giống hệt nhau. Nếu worker lỗi, run chuyển sang `failed`; có thể tiếp tục run đã dừng bằng `--resume --run-id <run_id>`. Giới hạn mặc định là 5 phase, thay đổi bằng `--max-phases`.
+
+### Bước 6: Chạy Phase 1 - Cào chính 200,000 ID
 
 Khởi chạy 5 tiến trình song song qua 5 Cloudflare Worker Edge Proxies, chia đều 200 batches (1,000 items/batch):
 

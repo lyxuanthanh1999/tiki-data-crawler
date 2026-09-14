@@ -21,13 +21,19 @@ from typing import Any, Dict, List, Set
 DATA_OUTPUT_DIR = Path("data/output")
 
 
-def discover_parts_dirs() -> List[Path]:
+def discover_parts_dirs(parts_root: Path | None = None) -> List[Path]:
     """
     Tự động phát hiện tất cả thư mục parts theo pattern:
       - data/output/concurrency/parts          (Phase 1)
       - data/output/retry_{name}/parts         (Generic Retry Runner: pass2, pass3, pass4, pass5, ...)
     Đảm bảo không bỏ sót bất kỳ phase nào dù thêm bằng Generic Retry Runner.
     """
+    if parts_root is not None:
+        return sorted(
+            (path for path in parts_root.rglob("parts") if path.is_dir()),
+            key=lambda path: str(path),
+        )
+
     dirs: List[Path] = []
 
     # Phase 1: concurrency
@@ -67,6 +73,12 @@ def parse_args():
         type=Path,
         default=DEFAULT_INPUT_FILE,
         help="Đường dẫn file 200,000 ID gốc (mặc định: data/input/product_ids.txt)",
+    )
+    parser.add_argument(
+        "--parts-root",
+        type=Path,
+        default=None,
+        help="Chỉ quét các thư mục parts bên dưới thư mục này (dùng cho run cô lập)",
     )
     return parser.parse_args()
 
@@ -122,7 +134,7 @@ def main():
     total_raw_products = 0  # Tổng sản phẩm trước khi dedup
 
     # Tự động phát hiện tất cả thư mục parts
-    parts_dirs = discover_parts_dirs()
+    parts_dirs = discover_parts_dirs(args.parts_root)
     print(f"🔍 Tự phát hiện {len(parts_dirs)} thư mục parts:")
     for d in parts_dirs:
         print(f"     • {d}")
