@@ -6,6 +6,7 @@ cd "$PROJECT_DIR"
 
 PYTHON_BIN="$PROJECT_DIR/venv/bin/python"
 [[ -x "$PYTHON_BIN" ]] || PYTHON_BIN="$(command -v python3)"
+export PYTHONUNBUFFERED=1
 
 RUN_NAME="selenium_worker_daemon"
 RESUME_INTERVAL=300
@@ -105,12 +106,22 @@ fi
   while true; do
     echo
     echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] Run main.py"
-    "${WAKE_WRAPPER[@]}" "$PYTHON_BIN" "$PROJECT_DIR/src/main.py" \
-      --auto-wait \
-      --auto-wait-interval 300 \
-      --max-waf-retries 0 \
-      "${MAIN_ARGS[@]}"
+    set +e
+    if [[ ${#WAKE_WRAPPER[@]} -gt 0 ]]; then
+      "${WAKE_WRAPPER[@]}" "$PYTHON_BIN" "$PROJECT_DIR/src/main.py" \
+        --auto-wait \
+        --auto-wait-interval 300 \
+        --max-waf-retries 0 \
+        "${MAIN_ARGS[@]}"
+    else
+      "$PYTHON_BIN" "$PROJECT_DIR/src/main.py" \
+        --auto-wait \
+        --auto-wait-interval 300 \
+        --max-waf-retries 0 \
+        "${MAIN_ARGS[@]}"
+    fi
     EXIT_CODE=$?
+    set -e
     echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] main.py exited with code $EXIT_CODE"
     echo "Sleep ${RESUME_INTERVAL}s before resume scan..."
     sleep "$RESUME_INTERVAL"
