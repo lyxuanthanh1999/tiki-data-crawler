@@ -28,6 +28,35 @@ DEFAULT_INPUT = Path("data/input/product_ids.txt")
 DEFAULT_OUTPUT = Path("data/output/concurrency/products_output.json")
 
 
+def load_worker_urls(worker_url: Optional[str]) -> list[str]:
+    """
+    Đọc Cloudflare Worker endpoint từ CLI.
+
+    Hỗ trợ:
+    - Một URL đơn.
+    - Nhiều URL phân tách bằng dấu phẩy hoặc xuống dòng.
+    - Đường dẫn file .txt chứa mỗi dòng một URL.
+    """
+    if not worker_url:
+        return []
+
+    candidate = Path(worker_url)
+    if candidate.exists():
+        raw_text = candidate.read_text(encoding="utf-8")
+    else:
+        raw_text = worker_url
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for part in raw_text.replace(",", "\n").splitlines():
+        url = part.strip().rstrip("/")
+        if not url or url.startswith("#") or url in seen:
+            continue
+        urls.append(url)
+        seen.add(url)
+    return urls
+
+
 def load_browser_session(cookie_file: Optional[Path]) -> tuple[dict[str, str], int]:
     """
     Đọc session đã capture từ Selenium và chuyển thành headers dùng cho aiohttp.
@@ -618,10 +647,11 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
         print_summary()
         return
 
-    # Resolve API endpoint: Cloudflare Worker hoặc Tiki trực tiếp
-    worker_url = getattr(args, "worker_url", None)
-    api_base_url = worker_url.rstrip("/") if worker_url else TIKI_API_BASE_URL
-    is_worker_mode = bool(worker_url)
+    # Resolve API endpoint: Cloudflare Worker hoặc Tiki trực tiếp.
+    # Nếu truyền nhiều Worker URL, mỗi worker async sẽ bám một endpoint riêng.
+    worker_urls = load_worker_urls(getattr(args, "worker_url", None))
+    api_base_urls = worker_urls or [TIKI_API_BASE_URL]
+    is_worker_mode = bool(worker_urls)
 
     # Chọn headers phù hợp: Worker không cần Origin/Referer của Tiki
     session_headers = (DEFAULT_HEADERS.copy() if not is_worker_mode else {
@@ -632,7 +662,13 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
     session_header_overrides, cookie_count = load_browser_session(session_file)
     session_headers.update(session_header_overrides)
 
-    endpoint_label = f"☁️  Cloudflare Worker → {api_base_url}" if is_worker_mode else f"🎯 Tiki trực tiếp → {api_base_url}"
+    if is_worker_mode:
+        endpoint_label = (
+            f"☁️  Cloudflare Workers ({len(api_base_urls)}) → "
+            f"{', '.join(api_base_urls)}"
+        )
+    else:
+        endpoint_label = f"🎯 Tiki trực tiếp → {api_base_urls[0]}"
     print(f"🌐 API endpoint: {endpoint_label}")
     if session_file:
         print(f"🍪 Browser session: {session_file} ({cookie_count} cookies)")
@@ -659,6 +695,7 @@ async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> N
         async def worker(worker_id: int) -> None:
             """Worker async lấy từng ID từ hàng đợi để xử lý cho đến khi hết queue hoặc có lệnh dừng."""
             tag = f"[Worker {worker_id}]"
+            api_base_url = api_base_urls[(worker_id - 1) % len(api_base_urls)]
             while not stop_event.is_set():
                 try:
                     product_id = id_queue.get_nowait()
@@ -754,8 +791,9 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "URL Cloudflare Worker Edge Proxy (bỏ trống = gọi trực tiếp Tiki API). "
-            "Ví dụ: https://tiki-proxy-worker.tyanh185.workers.dev"
+            "URL Cloudflare Worker Edge Proxy, nhiều URL phân tách bằng dấu phẩy, "
+            "hoặc file .txt chứa danh sách URL (bỏ trống = gọi trực tiếp Tiki API). "
+            "Ví dụ: data/input/worker_urls.txt"
         ),
     )
     parser.add_argument(

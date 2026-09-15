@@ -88,7 +88,7 @@ data/session/tiki_browser_session.json
 
 File này chứa cookie/session local, không commit lên GitHub.
 
-## Bước 2: Chạy 200,000 ID Bằng 2 Daemon
+## Bước 2: Chạy 200,000 ID Bằng 2 Daemon Qua Cloudflare Workers
 
 Khuyến nghị dùng 2 input đã chia sẵn:
 
@@ -97,30 +97,39 @@ data/input/product_ids_part1.txt
 data/input/product_ids_part2.txt
 ```
 
-### Process 1: Part 1, Gọi Tiki Direct
+Danh sách Worker đang nằm ở:
+
+```text
+data/input/worker_urls.txt
+```
+
+Khi truyền file này qua `--worker-url`, crawler sẽ chia các async worker lên nhiều Cloudflare Worker endpoint.
+
+### Process 1: Part 1, Qua Cloudflare Workers
 
 ```bash
-./runners/run_selenium_worker_daemon.sh --name tiki_part1_direct -- \
+./runners/run_selenium_worker_daemon.sh --name tiki_part1_worker -- \
   --input data/input/product_ids_part1.txt \
   --output-dir data/output/selenium_worker_test/part1_parts \
   --batch-size 1000 \
-  --concurrency 10 \
-  --delay-min 0.8 \
-  --delay-max 2.0 \
+  --concurrency 5 \
+  --delay-min 1.5 \
+  --delay-max 4 \
+  --worker-url data/input/worker_urls.txt \
   --cookie-file data/session/tiki_browser_session.json
 ```
 
-### Process 2: Part 2, Qua Cloudflare Worker
+### Process 2: Part 2, Qua Cloudflare Workers
 
 ```bash
 ./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
   --input data/input/product_ids_part2.txt \
   --output-dir data/output/selenium_worker_test/parts \
   --batch-size 1000 \
-  --concurrency 10 \
-  --delay-min 0.8 \
-  --delay-max 2.0 \
-  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --concurrency 5 \
+  --delay-min 1.5 \
+  --delay-max 4 \
+  --worker-url data/input/worker_urls.txt \
   --cookie-file data/session/tiki_browser_session.json
 ```
 
@@ -159,33 +168,38 @@ Crawler ghi cooldown toàn cục vào `*.retry.json` dưới key `_global`. Khi 
 
 ## Theo Dõi
 
-Xem log:
+Xem log part1:
+
+```bash
+tail -f logs/tiki_part1_worker.log
+```
+
+Xem log part2:
 
 ```bash
 tail -f logs/tiki_worker.log
-tail -f logs/tiki_part1_direct.log
 ```
 
 Kiểm tra PID:
 
 ```bash
+cat logs/tiki_part1_worker.pid
 cat logs/tiki_worker.pid
-cat logs/tiki_part1_direct.pid
 ```
 
 Kiểm tra process:
 
 ```bash
+ps -p $(cat logs/tiki_part1_worker.pid) -o pid,ppid,etime,stat,command
 ps -p $(cat logs/tiki_worker.pid) -o pid,ppid,etime,stat,command
-ps -p $(cat logs/tiki_part1_direct.pid) -o pid,ppid,etime,stat,command
-pgrep -fl "src/main.py|caffeinate|run_selenium_worker_daemon|tiki_worker|tiki_part1_direct"
+pgrep -fl "src/main.py|caffeinate|run_selenium_worker_daemon|tiki_part1_worker|tiki_worker"
 ```
 
 Kiểm tra output có tăng không:
 
 ```bash
-wc -l data/output/selenium_worker_test/parts/products_part_0004.jsonl
 wc -l data/output/selenium_worker_test/part1_parts/products_part_0001.jsonl
+wc -l data/output/selenium_worker_test/parts/products_part_0009.jsonl
 ```
 
 Kiểm tra batch có cooldown WAF không:
@@ -195,28 +209,25 @@ Kiểm tra batch có cooldown WAF không:
 import json, time
 from pathlib import Path
 
-retry_file = Path("data/output/selenium_worker_test/parts/products_part_0004.retry.json")
-if not retry_file.exists():
-    print("Chưa có retry file")
-else:
+for retry_file in sorted(Path("data/output/selenium_worker_test").glob("**/products_part_*.retry.json")):
     data = json.loads(retry_file.read_text(encoding="utf-8"))
-    retry_items = [k for k in data if k != "_global"]
+    retry_items = [key for key in data if key != "_global"]
     global_state = data.get("_global")
-    print(f"retry_items={len(retry_items)}")
+    remaining = 0
+    reason = None
     if global_state and global_state.get("next_retry_at"):
         remaining = max(0, int(float(global_state["next_retry_at"]) - time.time() + 0.999))
-        print(f"global_cooldown={remaining}s")
-        print(f"reason={global_state.get('reason')}")
-    else:
-        print("global_cooldown=0s")
+        reason = global_state.get("reason")
+    if retry_items or remaining:
+        print(f"{retry_file}: retry_items={len(retry_items)}, global_cooldown={remaining}s, reason={reason}")
 PY
 ```
 
 ## Dừng Daemon
 
 ```bash
+./runners/stop_selenium_worker_daemon.sh --name tiki_part1_worker
 ./runners/stop_selenium_worker_daemon.sh --name tiki_worker
-./runners/stop_selenium_worker_daemon.sh --name tiki_part1_direct
 ```
 
 ## Chạy Lại / Resume
@@ -234,7 +245,7 @@ Crawler sẽ tự bỏ qua ID đã có trong `.progress.txt`, giữ lỗi tạm 
 - Nếu gập máy làm macOS sleep sâu, process có thể tạm dừng trong lúc sleep. Khi mở máy/mạng ổn lại, daemon tiếp tục vòng resume.
 - Nếu muốn chạy 24/7 thật sự, nên chạy trên VPS thay vì laptop.
 - Nếu Cloudflare Worker không forward `Cookie` header về Tiki, `--cookie-file` ở mode Worker có thể không tạo khác biệt. Khi đó kiểm chứng bằng Tiki Direct trước.
-- Không tăng concurrency quá nhanh. Mốc thử hiện tại: `--concurrency 10`, `--delay-min 0.8`, `--delay-max 2.0`.
+- Không tăng concurrency quá nhanh. Mốc thử hiện tại: `--concurrency 5`, `--delay-min 1.5`, `--delay-max 4`, dùng 5 Worker URL trong `data/input/worker_urls.txt`.
 
 ## Test
 

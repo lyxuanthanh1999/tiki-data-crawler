@@ -8,7 +8,7 @@ Chạy crawl Tiki theo mô hình:
 
 - Selenium chỉ dùng để lấy browser session/cookie.
 - `aiohttp` vẫn là engine crawl chính.
-- Cloudflare Worker là proxy tùy chọn cho một phần input.
+- Cloudflare Worker là proxy chính; có thể truyền nhiều Worker URL để chia tải.
 - Daemon runner chạy nền, tự resume theo file output/retry/progress.
 
 ## 1. Capture Cookie Bằng Selenium
@@ -28,41 +28,56 @@ data/session/tiki_browser_session.json
 
 File này chứa cookie local, không push GitHub.
 
-## 2. Chạy Nền Part 1: Tiki Direct
+## 2. Danh Sách Cloudflare Worker
+
+File `data/input/worker_urls.txt` đang chứa 5 Worker endpoint:
+
+```text
+https://tiki-proxy-worker.tyanh185.workers.dev
+https://tiki-proxy-worker-2.tyanh185.workers.dev
+https://tiki-proxy-worker-3.tyanh185.workers.dev
+https://tiki-proxy-worker-4.tyanh185.workers.dev
+https://tiki-proxy-worker-5.tyanh185.workers.dev
+```
+
+Khi truyền file này qua `--worker-url`, mỗi async worker sẽ bám một Worker URL theo thứ tự để chia tải.
+
+## 3. Chạy Nền Part 1: Qua Cloudflare Workers
 
 ```bash
-./runners/run_selenium_worker_daemon.sh --name tiki_part1_direct -- \
+./runners/run_selenium_worker_daemon.sh --name tiki_part1_worker -- \
   --input data/input/product_ids_part1.txt \
   --output-dir data/output/selenium_worker_test/part1_parts \
   --batch-size 1000 \
-  --concurrency 10 \
-  --delay-min 0.8 \
-  --delay-max 2.0 \
+  --concurrency 5 \
+  --delay-min 1.5 \
+  --delay-max 4 \
+  --worker-url data/input/worker_urls.txt \
   --cookie-file data/session/tiki_browser_session.json
 ```
 
-## 3. Chạy Nền Part 2: Cloudflare Worker
+## 4. Chạy Nền Part 2: Qua Cloudflare Workers
 
 ```bash
 ./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
   --input data/input/product_ids_part2.txt \
   --output-dir data/output/selenium_worker_test/parts \
   --batch-size 1000 \
-  --concurrency 10 \
-  --delay-min 0.8 \
-  --delay-max 2.0 \
-  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --concurrency 5 \
+  --delay-min 1.5 \
+  --delay-max 4 \
+  --worker-url data/input/worker_urls.txt \
   --cookie-file data/session/tiki_browser_session.json
 ```
 
 Không cho 2 process ghi cùng `--output-dir`.
 
-## 4. Dừng Từng Daemon
+## 5. Dừng Từng Daemon
 
 Dừng part1:
 
 ```bash
-./runners/stop_selenium_worker_daemon.sh --name tiki_part1_direct
+./runners/stop_selenium_worker_daemon.sh --name tiki_part1_worker
 ```
 
 Dừng part2:
@@ -71,27 +86,51 @@ Dừng part2:
 ./runners/stop_selenium_worker_daemon.sh --name tiki_worker
 ```
 
-## 5. Kiểm Tra Process Đang Chạy
+## 6. Kiểm Tra Process Đang Chạy
+
+Kiểm tra PID file:
 
 ```bash
-ls -l logs/tiki_part1_direct.pid logs/tiki_worker.pid 2>/dev/null
+ls -l logs/tiki_part1_worker.pid logs/tiki_worker.pid 2>/dev/null
 ```
+
+Kiểm tra process tổng quát:
 
 ```bash
-ps aux | grep -E "tiki_part1_direct|tiki_worker|src/main.py|caffeinate" | grep -v grep
+ps aux | grep -E "tiki_part1_worker|tiki_worker|src/main.py|caffeinate" | grep -v grep
 ```
 
-## 6. Xem Log
+Kiểm tra từng PID:
 
 ```bash
-tail -f logs/tiki_part1_direct.log
+ps -p $(cat logs/tiki_part1_worker.pid) -o pid,ppid,etime,stat,command
+ps -p $(cat logs/tiki_worker.pid) -o pid,ppid,etime,stat,command
 ```
+
+Nếu chỉ thấy `tail -f ...log` thì đó chỉ là cửa sổ xem log, không phải crawler.
+
+## 7. Xem Log
+
+Part1:
+
+```bash
+tail -f logs/tiki_part1_worker.log
+```
+
+Part2:
 
 ```bash
 tail -f logs/tiki_worker.log
 ```
 
-## 7. Kiểm Tra Output Có Tăng Không
+Log chạy đúng Worker mode sẽ có dạng:
+
+```text
+🌐 API endpoint: ☁️  Cloudflare Workers (5) → ...
+🚀 Khởi chạy 5 worker(s) bất đồng bộ...
+```
+
+## 8. Kiểm Tra Output Có Tăng Không
 
 Part1:
 
@@ -107,7 +146,36 @@ wc -l data/output/selenium_worker_test/parts/products_part_0009.jsonl
 stat -f '%Sm %N' data/output/selenium_worker_test/parts/products_part_0009.jsonl
 ```
 
-## 8. Đếm Tổng Kết Quả
+## 9. Kiểm Tra WAF / Retry / Cooldown
+
+```bash
+./venv/bin/python - <<'PY'
+import json, time
+from pathlib import Path
+
+for retry_file in sorted(Path("data/output/selenium_worker_test").glob("**/products_part_*.retry.json")):
+    try:
+        data = json.loads(retry_file.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+
+    retry_items = [key for key in data if key != "_global"]
+    global_state = data.get("_global")
+    remaining = 0
+    reason = None
+
+    if global_state and global_state.get("next_retry_at"):
+        remaining = max(0, int(float(global_state["next_retry_at"]) - time.time() + 0.999))
+        reason = global_state.get("reason")
+
+    if retry_items or remaining:
+        print(f"{retry_file}: retry_items={len(retry_items)}, global_cooldown={remaining}s, reason={reason}")
+PY
+```
+
+Nếu `global_cooldown > 0`, daemon sẽ tự chờ rồi resume khi hết cooldown.
+
+## 10. Đếm Tổng Kết Quả
 
 ```bash
 ./venv/bin/python - <<'PY'
@@ -115,7 +183,7 @@ import json, time
 from pathlib import Path
 
 roots = [
-    ("part1_direct", Path("data/output/selenium_worker_test/part1_parts"), 100000),
+    ("part1_worker", Path("data/output/selenium_worker_test/part1_parts"), 100000),
     ("part2_worker", Path("data/output/selenium_worker_test/parts"), 100000),
 ]
 
@@ -162,7 +230,7 @@ print(f"  ok={grand_ok}, permanent={grand_perm}, retry={grand_retry}, done={gran
 PY
 ```
 
-## 9. Resume
+## 11. Resume
 
 Chạy lại đúng lệnh cũ, giữ nguyên:
 
@@ -172,7 +240,7 @@ Chạy lại đúng lệnh cũ, giữ nguyên:
 
 Crawler sẽ bỏ qua ID đã thành công trong `.progress.txt`, giữ lỗi tạm thời trong `.retry.json`, và tiếp tục các ID đến hạn.
 
-## 10. WAF Backoff
+## 12. WAF Backoff
 
 Khi gặp HTML challenge/WAF:
 

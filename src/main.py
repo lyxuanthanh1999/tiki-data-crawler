@@ -438,8 +438,9 @@ def main():
         type=str,
         default=None,
         help=(
-            "URL Cloudflare Worker Edge Proxy (bỏ trống = gọi trực tiếp Tiki API). "
-            "Ví dụ: https://tiki-proxy-worker.tyanh185.workers.dev"
+            "URL Cloudflare Worker Edge Proxy, nhiều URL phân tách bằng dấu phẩy, "
+            "hoặc file .txt chứa danh sách URL (bỏ trống = gọi trực tiếp Tiki API). "
+            "Ví dụ: data/input/worker_urls.txt"
         ),
     )
     parser.add_argument(
