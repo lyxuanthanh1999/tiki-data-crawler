@@ -103,7 +103,7 @@ Danh sách Worker đang nằm ở:
 data/input/worker_urls.txt
 ```
 
-Khi truyền file này qua `--worker-url`, crawler sẽ chia các async worker lên nhiều Cloudflare Worker endpoint.
+Khi truyền file này qua `--worker-url`, crawler sẽ chia các async worker lên nhiều Cloudflare Worker endpoint. File hiện có 10 Worker URL.
 
 ### Process 1: Part 1, Qua Cloudflare Workers
 
@@ -126,7 +126,7 @@ Khi truyền file này qua `--worker-url`, crawler sẽ chia các async worker l
   --input data/input/product_ids_part2.txt \
   --output-dir data/output/selenium_worker_test/parts \
   --batch-size 1000 \
-  --concurrency 5 \
+  --concurrency 10 \
   --delay-min 1.5 \
   --delay-max 4 \
   --worker-url data/input/worker_urls.txt \
@@ -167,6 +167,86 @@ Khi gặp HTML challenge/WAF:
 Crawler ghi cooldown toàn cục vào `*.retry.json` dưới key `_global`. Khi hết cooldown, `main.py` tự chạy tiếp nếu daemon còn hoạt động.
 
 ## Theo Dõi
+
+### Copy Nhanh: Part 1
+
+Chạy part1:
+
+```bash
+./runners/run_selenium_worker_daemon.sh --name tiki_part1_worker -- \
+  --input data/input/product_ids_part1.txt \
+  --output-dir data/output/selenium_worker_test/part1_parts \
+  --batch-size 1000 \
+  --concurrency 5 \
+  --delay-min 1.5 \
+  --delay-max 4 \
+  --worker-url data/input/worker_urls.txt \
+  --cookie-file data/session/tiki_browser_session.json
+```
+
+Xem log part1:
+
+```bash
+tail -n 80 -f logs/tiki_part1_worker.log
+```
+
+Kiểm tra process part1:
+
+```bash
+ps aux | grep -E "tiki_part1_worker|product_ids_part1|part1_parts" | grep -v grep
+```
+
+Kiểm tra output part1:
+
+```bash
+wc -l data/output/selenium_worker_test/part1_parts/products_part_*.jsonl
+```
+
+Dừng part1:
+
+```bash
+./runners/stop_selenium_worker_daemon.sh --name tiki_part1_worker
+```
+
+### Copy Nhanh: Part 2
+
+Chạy part2:
+
+```bash
+./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
+  --input data/input/product_ids_part2.txt \
+  --output-dir data/output/selenium_worker_test/parts \
+  --batch-size 1000 \
+  --concurrency 10 \
+  --delay-min 1.5 \
+  --delay-max 4 \
+  --worker-url data/input/worker_urls.txt \
+  --cookie-file data/session/tiki_browser_session.json
+```
+
+Xem log part2:
+
+```bash
+tail -n 80 -f logs/tiki_worker.log
+```
+
+Kiểm tra process part2:
+
+```bash
+ps aux | grep -E "tiki_worker|product_ids_part2|selenium_worker_test/parts" | grep -v grep
+```
+
+Kiểm tra output part2:
+
+```bash
+wc -l data/output/selenium_worker_test/parts/products_part_*.jsonl
+```
+
+Dừng part2:
+
+```bash
+./runners/stop_selenium_worker_daemon.sh --name tiki_worker
+```
 
 Xem log part1:
 
@@ -245,7 +325,7 @@ Crawler sẽ tự bỏ qua ID đã có trong `.progress.txt`, giữ lỗi tạm 
 - Nếu gập máy làm macOS sleep sâu, process có thể tạm dừng trong lúc sleep. Khi mở máy/mạng ổn lại, daemon tiếp tục vòng resume.
 - Nếu muốn chạy 24/7 thật sự, nên chạy trên VPS thay vì laptop.
 - Nếu Cloudflare Worker không forward `Cookie` header về Tiki, `--cookie-file` ở mode Worker có thể không tạo khác biệt. Khi đó kiểm chứng bằng Tiki Direct trước.
-- Không tăng concurrency quá nhanh. Mốc thử hiện tại: `--concurrency 5`, `--delay-min 1.5`, `--delay-max 4`, dùng 5 Worker URL trong `data/input/worker_urls.txt`.
+- Không tăng concurrency quá nhanh. Mốc thử hiện tại: part1 dùng `--concurrency 5`, part2 dùng `--concurrency 10`, cả hai dùng `--delay-min 1.5`, `--delay-max 4`, và 10 Worker URL trong `data/input/worker_urls.txt`.
 
 ## Test
 
