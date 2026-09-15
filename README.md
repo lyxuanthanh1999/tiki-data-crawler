@@ -41,8 +41,15 @@ flowchart LR
 
 ```text
 src/
-  main.py                     Batch orchestrator, chia output theo part 1000 sản phẩm
-  fetch_tiki_products.py      Async crawler, retry queue, WAF backoff, cookie-file
+  main.py                     Batch orchestrator, chạy tuần tự từng batch 1000 ID
+  fetch_tiki_products.py      CLI facade, giữ tương thích import/lệnh cũ
+  product_runner.py           Async worker queue cho một output batch
+  tiki_client.py              Gọi API product-detail và phân loại response/WAF/quota
+  result_store.py             Ghi JSON/JSONL, progress, retry, failed, stats
+  session_config.py           Đọc cookie Selenium và danh sách Worker URL
+  batching.py                 Đọc input, chia batch, seed output cũ, summarize trạng thái
+  pacer.py                    Delay ngẫu nhiên giữa request
+  crawler_models.py           Data model dùng chung
   cleaner.py                  Chuẩn hóa description và bóc tách field cần lấy
   config.py                   API base URL, headers, timeout, defaults
 
@@ -248,17 +255,7 @@ Dừng part2:
 ./runners/stop_selenium_worker_daemon.sh --name tiki_worker
 ```
 
-Xem log part1:
-
-```bash
-tail -f logs/tiki_part1_worker.log
-```
-
-Xem log part2:
-
-```bash
-tail -f logs/tiki_worker.log
-```
+### Copy Nhanh: Kiểm Tra Chung
 
 Kiểm tra PID:
 
@@ -278,8 +275,8 @@ pgrep -fl "src/main.py|caffeinate|run_selenium_worker_daemon|tiki_part1_worker|t
 Kiểm tra output có tăng không:
 
 ```bash
-wc -l data/output/selenium_worker_test/part1_parts/products_part_0001.jsonl
-wc -l data/output/selenium_worker_test/parts/products_part_0009.jsonl
+wc -l data/output/selenium_worker_test/part1_parts/products_part_*.jsonl
+wc -l data/output/selenium_worker_test/parts/products_part_*.jsonl
 ```
 
 Kiểm tra batch có cooldown WAF không:
@@ -319,6 +316,13 @@ Chạy lại đúng lệnh cũ, giữ nguyên:
 - `--batch-size`
 
 Crawler sẽ tự bỏ qua ID đã có trong `.progress.txt`, giữ lỗi tạm thời trong `.retry.json`, và tiếp tục xử lý các ID đến hạn.
+
+Khi dừng giữa chừng:
+
+- ID đã lưu trong `.jsonl` và `.progress.txt` sẽ không bị cào lại.
+- ID `http_404` đã ghi trong `.failed_permanent.json` sẽ không bị cào lại.
+- ID đang nằm trong `.retry.json` sẽ được thử lại khi đến hạn.
+- ID đang request đúng lúc dừng nhưng chưa kịp lưu có thể được gọi lại, nhưng không tạo trùng nếu trước đó chưa ghi success.
 
 ## Lưu Ý
 

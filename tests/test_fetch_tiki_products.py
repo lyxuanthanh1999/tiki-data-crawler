@@ -58,7 +58,7 @@ class ResultStoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_retry_schedule_and_global_cooldown_are_persisted(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "fetch_tiki_products.time.time", return_value=1000
+            "result_store.time.time", return_value=1000
         ):
             output = Path(temp_dir) / "products.json"
             store = ResultStore(output)
@@ -75,7 +75,7 @@ class ResultStoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_waf_backoff_escalates_to_one_hour(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "fetch_tiki_products.time.time", return_value=1000
+            "result_store.time.time", return_value=1000
         ):
             store = ResultStore(Path(temp_dir) / "products.json")
 

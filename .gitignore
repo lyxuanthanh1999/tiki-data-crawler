@@ -27,15 +27,12 @@ logs/
 *.log
 *.pids
 
-# Large consolidated output files (>100MB exceeds GitHub limits; rebuild via merge_parts.py)
-data/output/all_products.csv
-data/output/concurrency/products_output.json
-data/output/concurrency/products_output.jsonl
-data/output/retry_pass2/
-data/output/retry_pass3/
-data/output/retry_pass4/
-data/output/retry_*/
+# Runtime crawler state/output
+data/checkpoint.json
+data/output/
 data/input/auto_runs/
+data/input/failed_ids_pass*.txt
+data/input/product_ids_10.txt
+data/input/sample_product_ids.txt
 data/output/auto_runs/
-data/output/selenium_worker_test/
 data/session/
