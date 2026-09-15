@@ -1,84 +1,65 @@
 # Tiki Selenium Worker Hybrid
 
-Nhánh `selenium-worker-hybrid` dùng để thử nghiệm mô hình crawl Tiki kết hợp:
+Nhanh gọn: nhánh `selenium-worker-hybrid` dùng để crawl sản phẩm Tiki bằng API, có hỗ trợ cookie lấy từ Selenium và proxy qua Cloudflare Workers.
 
-- Selenium Chrome: lấy `cookie` và `user_agent` từ trình duyệt thật.
-- Cloudflare Worker: proxy tùy chọn để tách endpoint/IP khỏi máy local.
-- `aiohttp` crawler: vẫn là engine crawl chính để giữ tốc độ, checkpoint và resume.
+Selenium chỉ dùng để lấy browser session/cookie. Phần crawl chính vẫn chạy bằng `aiohttp` để nhanh hơn và có checkpoint/resume.
 
-Selenium không được dùng để mở 200,000 trang sản phẩm. Selenium chỉ bootstrap browser session; dữ liệu sản phẩm vẫn lấy từ API:
+## Cấu Trúc Chính
 
 ```text
-https://api.tiki.vn/product-detail/api/v1/products/{product_id}
+src/main.py                  Chia batch 1000 ID và điều phối crawl
+src/product_runner.py        Chạy async workers cho từng batch
+src/tiki_client.py           Gọi product-detail API, nhận diện WAF/lỗi
+src/result_store.py          Lưu json/jsonl/progress/retry/stats
+src/session_config.py        Đọc cookie Selenium và Worker URLs
+src/cleaner.py               Chuẩn hóa description và field output
+
+runners/run_selenium_worker_daemon.sh   Chạy nền, auto resume
+runners/stop_selenium_worker_daemon.sh  Dừng process chạy nền
+tools/capture_tiki_browser_session.py   Lấy cookie/user-agent bằng Selenium
+tools/merge_parts.py                    Gộp file parts khi cần
 ```
 
-## Mô Hình
-
-```mermaid
-flowchart LR
-    IDS["product_ids_part1.txt / product_ids_part2.txt"]
-    SEL["Selenium Chrome"]
-    SESSION["data/session/tiki_browser_session.json"]
-    DAEMON["run_selenium_worker_daemon.sh"]
-    MAIN["src/main.py"]
-    FETCH["src/fetch_tiki_products.py"]
-    CF["Cloudflare Worker optional"]
-    TIKI["Tiki Product Detail API"]
-    OUT["parts/*.json, *.jsonl, *.progress.txt, *.retry.json"]
-
-    SEL --> SESSION
-    IDS --> DAEMON
-    SESSION --> DAEMON
-    DAEMON --> MAIN
-    MAIN --> FETCH
-    FETCH --> CF
-    CF --> TIKI
-    FETCH --> TIKI
-    FETCH --> OUT
-```
-
-## Source Chính
+Output và log hiện dùng:
 
 ```text
-src/
-  main.py                     Batch orchestrator, chạy tuần tự từng batch 1000 ID
-  fetch_tiki_products.py      CLI facade, giữ tương thích import/lệnh cũ
-  product_runner.py           Async worker queue cho một output batch
-  tiki_client.py              Gọi API product-detail và phân loại response/WAF/quota
-  result_store.py             Ghi JSON/JSONL, progress, retry, failed, stats
-  session_config.py           Đọc cookie Selenium và danh sách Worker URL
-  batching.py                 Đọc input, chia batch, seed output cũ, summarize trạng thái
-  pacer.py                    Delay ngẫu nhiên giữa request
-  crawler_models.py           Data model dùng chung
-  cleaner.py                  Chuẩn hóa description và bóc tách field cần lấy
-  config.py                   API base URL, headers, timeout, defaults
-
-tools/
-  capture_tiki_browser_session.py   Mở Chrome Selenium và lưu cookie/user-agent
-  merge_parts.py                    Merge output parts khi cần tổng hợp
-
-runners/
-  run_selenium_worker_daemon.sh      Chạy nền, auto-wait, auto-resume
-  stop_selenium_worker_daemon.sh     Dừng daemon theo PID file
-
-requirements.txt             Dependency crawler chính
-requirements-selenium.txt    Dependency Selenium riêng cho nhánh thử nghiệm
+data/output/selenium_worker_test/part1_parts
+data/output/selenium_worker_test/parts
+logs/tiki_part1_worker.log
+logs/tiki_worker.log
 ```
-
-Các output runtime như `data/session/`, `data/output/selenium_worker_test/`, `logs/` không được push lên GitHub.
 
 ## Cài Đặt
+
+Dùng Poetry:
+
+```bash
+python3 -m pip install poetry
+poetry config virtualenvs.in-project true
+poetry install
+```
+
+Hoặc dùng `venv` cũ:
 
 ```bash
 ./venv/bin/python -m pip install -r requirements.txt
 ./venv/bin/python -m pip install -r requirements-selenium.txt
 ```
 
-Nếu Selenium chưa mở được Chrome, cập nhật Chrome lên bản mới. Selenium 4 sẽ tự xử lý ChromeDriver qua Selenium Manager trong đa số trường hợp.
+Runner sẽ tự ưu tiên `.venv/bin/python`, nếu không có thì dùng `venv/bin/python`, cuối cùng là `python3`.
 
-## Bước 1: Capture Browser Session
+## Lấy Cookie Selenium
 
-Chạy lệnh này trước để tạo file cookie:
+Chạy một lần trước khi crawl:
+
+```bash
+poetry run python tools/capture_tiki_browser_session.py \
+  --output data/session/tiki_browser_session.json \
+  --worker-url https://tiki-proxy-worker.tyanh185.workers.dev \
+  --wait-seconds 8
+```
+
+Nếu dùng `venv`:
 
 ```bash
 ./venv/bin/python tools/capture_tiki_browser_session.py \
@@ -87,32 +68,15 @@ Chạy lệnh này trước để tạo file cookie:
   --wait-seconds 8
 ```
 
-Kết quả:
+File cookie tạo ra:
 
 ```text
 data/session/tiki_browser_session.json
 ```
 
-File này chứa cookie/session local, không commit lên GitHub.
+## Chạy Crawl Nền
 
-## Bước 2: Chạy 200,000 ID Bằng 2 Daemon Qua Cloudflare Workers
-
-Khuyến nghị dùng 2 input đã chia sẵn:
-
-```text
-data/input/product_ids_part1.txt
-data/input/product_ids_part2.txt
-```
-
-Danh sách Worker đang nằm ở:
-
-```text
-data/input/worker_urls.txt
-```
-
-Khi truyền file này qua `--worker-url`, crawler sẽ chia các async worker lên nhiều Cloudflare Worker endpoint. File hiện có 10 Worker URL.
-
-### Process 1: Part 1, Qua Cloudflare Workers
+Part 1:
 
 ```bash
 ./runners/run_selenium_worker_daemon.sh --name tiki_part1_worker -- \
@@ -126,7 +90,7 @@ Khi truyền file này qua `--worker-url`, crawler sẽ chia các async worker l
   --cookie-file data/session/tiki_browser_session.json
 ```
 
-### Process 2: Part 2, Qua Cloudflare Workers
+Part 2:
 
 ```bash
 ./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
@@ -140,126 +104,19 @@ Khi truyền file này qua `--worker-url`, crawler sẽ chia các async worker l
   --cookie-file data/session/tiki_browser_session.json
 ```
 
-Không cho 2 process ghi cùng một `--output-dir`, vì batch `products_part_0001.json` sẽ bị trùng tên.
+Lưu ý:
 
-## Cơ Chế Chạy Nền
+- `--batch-size 1000` nghĩa là mỗi file part xử lý khoảng 1000 product ID.
+- Không cho 2 process dùng cùng `--output-dir`.
+- `--worker-url data/input/worker_urls.txt` nghĩa là dùng danh sách nhiều Cloudflare Worker URL trong file đó.
+- Nếu dừng rồi chạy lại đúng lệnh cũ, crawler sẽ resume theo `*.jsonl`, `*.progress.txt`, `*.retry.json`.
 
-`run_selenium_worker_daemon.sh` sẽ:
+## Kiểm Tra Đang Chạy
 
-- chạy `src/main.py` trong background;
-- bật `PYTHONUNBUFFERED=1` để log ra nhanh hơn;
-- bật `--auto-wait`;
-- dùng `caffeinate -dimsu` trên macOS để hạn chế sleep;
-- nếu `main.py` thoát do lỗi mạng/process, ngủ 300 giây rồi chạy lại;
-- resume theo các file output đã có.
-
-Các file resume chính:
-
-```text
-products_part_0001.jsonl
-products_part_0001.progress.txt
-products_part_0001.retry.json
-products_part_0001.failed_permanent.json
-products_part_0001.stats.json
-```
-
-## WAF Backoff
-
-Khi gặp HTML challenge/WAF:
-
-```text
-5 phút -> 15 phút -> 30 phút -> 1 tiếng -> tiếp tục 1 tiếng
-```
-
-Crawler ghi cooldown toàn cục vào `*.retry.json` dưới key `_global`. Khi hết cooldown, `main.py` tự chạy tiếp nếu daemon còn hoạt động.
-
-## Theo Dõi
-
-### Copy Nhanh: Part 1
-
-Chạy part1:
+Xem PID file:
 
 ```bash
-./runners/run_selenium_worker_daemon.sh --name tiki_part1_worker -- \
-  --input data/input/product_ids_part1.txt \
-  --output-dir data/output/selenium_worker_test/part1_parts \
-  --batch-size 1000 \
-  --concurrency 5 \
-  --delay-min 1.5 \
-  --delay-max 4 \
-  --worker-url data/input/worker_urls.txt \
-  --cookie-file data/session/tiki_browser_session.json
-```
-
-Xem log part1:
-
-```bash
-tail -n 80 -f logs/tiki_part1_worker.log
-```
-
-Kiểm tra process part1:
-
-```bash
-ps aux | grep -E "tiki_part1_worker|product_ids_part1|part1_parts" | grep -v grep
-```
-
-Kiểm tra output part1:
-
-```bash
-wc -l data/output/selenium_worker_test/part1_parts/products_part_*.jsonl
-```
-
-Dừng part1:
-
-```bash
-./runners/stop_selenium_worker_daemon.sh --name tiki_part1_worker
-```
-
-### Copy Nhanh: Part 2
-
-Chạy part2:
-
-```bash
-./runners/run_selenium_worker_daemon.sh --name tiki_worker -- \
-  --input data/input/product_ids_part2.txt \
-  --output-dir data/output/selenium_worker_test/parts \
-  --batch-size 1000 \
-  --concurrency 10 \
-  --delay-min 1.5 \
-  --delay-max 4 \
-  --worker-url data/input/worker_urls.txt \
-  --cookie-file data/session/tiki_browser_session.json
-```
-
-Xem log part2:
-
-```bash
-tail -n 80 -f logs/tiki_worker.log
-```
-
-Kiểm tra process part2:
-
-```bash
-ps aux | grep -E "tiki_worker|product_ids_part2|selenium_worker_test/parts" | grep -v grep
-```
-
-Kiểm tra output part2:
-
-```bash
-wc -l data/output/selenium_worker_test/parts/products_part_*.jsonl
-```
-
-Dừng part2:
-
-```bash
-./runners/stop_selenium_worker_daemon.sh --name tiki_worker
-```
-
-### Copy Nhanh: Kiểm Tra Chung
-
-Kiểm tra PID:
-
-```bash
+ls -l logs/tiki_part1_worker.pid logs/tiki_worker.pid
 cat logs/tiki_part1_worker.pid
 cat logs/tiki_worker.pid
 ```
@@ -267,73 +124,119 @@ cat logs/tiki_worker.pid
 Kiểm tra process:
 
 ```bash
+ps aux | grep -E "tiki_part1_worker|tiki_worker|src/main.py|caffeinate" | grep -v grep
+```
+
+Kiểm tra theo PID:
+
+```bash
 ps -p $(cat logs/tiki_part1_worker.pid) -o pid,ppid,etime,stat,command
 ps -p $(cat logs/tiki_worker.pid) -o pid,ppid,etime,stat,command
-pgrep -fl "src/main.py|caffeinate|run_selenium_worker_daemon|tiki_part1_worker|tiki_worker"
 ```
 
-Kiểm tra output có tăng không:
+## Xem Log
+
+Theo dõi part 1:
 
 ```bash
-wc -l data/output/selenium_worker_test/part1_parts/products_part_*.jsonl
-wc -l data/output/selenium_worker_test/parts/products_part_*.jsonl
+tail -n 100 -f logs/tiki_part1_worker.log
 ```
 
-Kiểm tra batch có cooldown WAF không:
+Theo dõi part 2:
 
 ```bash
-./venv/bin/python - <<'PY'
-import json, time
-from pathlib import Path
-
-for retry_file in sorted(Path("data/output/selenium_worker_test").glob("**/products_part_*.retry.json")):
-    data = json.loads(retry_file.read_text(encoding="utf-8"))
-    retry_items = [key for key in data if key != "_global"]
-    global_state = data.get("_global")
-    remaining = 0
-    reason = None
-    if global_state and global_state.get("next_retry_at"):
-        remaining = max(0, int(float(global_state["next_retry_at"]) - time.time() + 0.999))
-        reason = global_state.get("reason")
-    if retry_items or remaining:
-        print(f"{retry_file}: retry_items={len(retry_items)}, global_cooldown={remaining}s, reason={reason}")
-PY
+tail -n 100 -f logs/tiki_worker.log
 ```
 
-## Dừng Daemon
+Xem nhanh dòng cuối:
+
+```bash
+tail -n 60 logs/tiki_part1_worker.log
+tail -n 60 logs/tiki_worker.log
+```
+
+Log chạy đúng Worker mode sẽ có dạng:
+
+```text
+API endpoint: Cloudflare Workers
+Khoi chay ... worker(s)
+```
+
+## Kiểm Tra Output
+
+Đếm số dòng JSONL đã lưu:
+
+```bash
+wc -l data/output/selenium_worker_test/part1_parts/*.jsonl
+wc -l data/output/selenium_worker_test/parts/*.jsonl
+```
+
+Xem file mới cập nhật gần nhất:
+
+```bash
+ls -lt data/output/selenium_worker_test/part1_parts | head
+ls -lt data/output/selenium_worker_test/parts | head
+```
+
+Đếm tổng kết quả đã lưu:
+
+```bash
+find data/output/selenium_worker_test -name "*.jsonl" -print0 | xargs -0 wc -l
+```
+
+## Kiểm Tra WAF / Retry
+
+```bash
+find data/output/selenium_worker_test -name "*.retry.json" -size +2c -print
+```
+
+Nếu log có WAF/HTML challenge, daemon sẽ tự chờ rồi chạy lại. Backoff hiện dùng:
+
+```text
+5 phút -> 15 phút -> 30 phút -> 1 tiếng
+```
+
+## Dừng Crawl
+
+Dừng part 1:
 
 ```bash
 ./runners/stop_selenium_worker_daemon.sh --name tiki_part1_worker
+```
+
+Dừng part 2:
+
+```bash
 ./runners/stop_selenium_worker_daemon.sh --name tiki_worker
 ```
 
-## Chạy Lại / Resume
-
-Chạy lại đúng lệnh cũ, giữ nguyên:
-
-- `--input`
-- `--output-dir`
-- `--batch-size`
-
-Crawler sẽ tự bỏ qua ID đã có trong `.progress.txt`, giữ lỗi tạm thời trong `.retry.json`, và tiếp tục xử lý các ID đến hạn.
-
-Khi dừng giữa chừng:
-
-- ID đã lưu trong `.jsonl` và `.progress.txt` sẽ không bị cào lại.
-- ID `http_404` đã ghi trong `.failed_permanent.json` sẽ không bị cào lại.
-- ID đang nằm trong `.retry.json` sẽ được thử lại khi đến hạn.
-- ID đang request đúng lúc dừng nhưng chưa kịp lưu có thể được gọi lại, nhưng không tạo trùng nếu trước đó chưa ghi success.
-
-## Lưu Ý
-
-- Nếu gập máy làm macOS sleep sâu, process có thể tạm dừng trong lúc sleep. Khi mở máy/mạng ổn lại, daemon tiếp tục vòng resume.
-- Nếu muốn chạy 24/7 thật sự, nên chạy trên VPS thay vì laptop.
-- Nếu Cloudflare Worker không forward `Cookie` header về Tiki, `--cookie-file` ở mode Worker có thể không tạo khác biệt. Khi đó kiểm chứng bằng Tiki Direct trước.
-- Không tăng concurrency quá nhanh. Mốc thử hiện tại: part1 dùng `--concurrency 5`, part2 dùng `--concurrency 10`, cả hai dùng `--delay-min 1.5`, `--delay-max 4`, và 10 Worker URL trong `data/input/worker_urls.txt`.
-
-## Test
+Kiểm tra lại sau khi dừng:
 
 ```bash
-./venv/bin/python -m compileall src tools tests
-PYTHONPATH=src ./venv/bin/python -m unittest tests.test_fetch_tiki_products
+ls logs/*.pid
+ps aux | grep -E "tiki_part1_worker|tiki_worker|src/main.py|caffeinate" | grep -v grep
+```
+
+## Resume
+
+Muốn chạy tiếp, dùng lại đúng lệnh ở mục "Chạy Crawl Nền".
+
+Không xoá các file này nếu muốn resume:
+
+```text
+*.jsonl
+*.progress.txt
+*.retry.json
+*.failed_permanent.json
+*.stats.json
+```
+
+## Git
+
+Không push các dữ liệu runtime:
+
+```text
+data/output/
+data/session/
+logs/
 ```

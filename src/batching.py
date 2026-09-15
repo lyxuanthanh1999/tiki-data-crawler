@@ -1,4 +1,8 @@
-"""Batch slicing, status summaries, and seeding helpers."""
+"""Batch slicing, status summaries, and seeding helpers.
+
+Module này không gọi network. Nó chỉ chuẩn bị danh sách ID, chia batch, đọc lại
+trạng thái đã lưu và seed dữ liệu cũ sang cấu trúc output hiện tại.
+"""
 
 import csv
 import json
@@ -66,6 +70,7 @@ def create_sample_ids_file(file_path: Path, count: int = 20) -> list[int]:
 
 
 def chunk_ids(product_ids: list[int], batch_size: int) -> list[list[int]]:
+    """Chia list ID thành nhiều batch, giữ nguyên thứ tự từ file input."""
     return [
         product_ids[index : index + batch_size]
         for index in range(0, len(product_ids), batch_size)
@@ -73,10 +78,17 @@ def chunk_ids(product_ids: list[int], batch_size: int) -> list[list[int]]:
 
 
 def batch_output_path(output_dir: Path, batch_index: int) -> Path:
+    """Tạo tên file output ổn định: products_part_0001.json, ..."""
     return output_dir / f"products_part_{batch_index:04d}.json"
 
 
 def summarize_batch(product_ids: list[int], output_file: Path) -> dict[str, int]:
+    """
+    Tóm tắt trạng thái một batch từ các file sidecar.
+
+    Kết quả này được `main.py` dùng để quyết định batch đã xong, còn ID đến hạn,
+    hay đang phải chờ retry/cooldown.
+    """
     store = ResultStore(output_file)
     success = len(store.successful_ids)
     permanent_failed = store.permanently_failed_count
@@ -108,6 +120,7 @@ def summarize_batch(product_ids: list[int], output_file: Path) -> dict[str, int]
 
 
 def load_saved_products(output_file: Path) -> list[dict[str, Any]]:
+    """Đọc sản phẩm đã lưu từ `.jsonl` nếu có, fallback sang `.json`."""
     source = output_file.with_suffix(".jsonl") if output_file.with_suffix(".jsonl").exists() else output_file
     if not source.exists():
         return []
@@ -120,6 +133,7 @@ def load_saved_products(output_file: Path) -> list[dict[str, Any]]:
 
 
 def load_failed_permanent(output_file: Path) -> dict[str, dict[str, Any]]:
+    """Đọc danh sách ID lỗi vĩnh viễn tương ứng với một output file."""
     failed_file = output_file.with_suffix(".failed_permanent.json")
     if not failed_file.exists():
         return {}

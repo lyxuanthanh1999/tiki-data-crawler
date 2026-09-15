@@ -1,4 +1,13 @@
-"""Async worker queue for fetching one output batch."""
+"""Async worker queue cho một output batch.
+
+`main.py` gọi module này với đúng 1000 ID của một batch. Module này chịu trách
+nhiệm:
+- lọc ID đã thành công / đang retry / lỗi vĩnh viễn;
+- mở một `aiohttp.ClientSession`;
+- tạo N async worker theo `--concurrency`;
+- chia Worker URL theo worker_id nếu có nhiều Cloudflare Worker;
+- ghi kết quả ngay sau từng sản phẩm qua `ResultStore`.
+"""
 
 import argparse
 import asyncio
@@ -23,12 +32,18 @@ def load_product_ids(input_file: Path, limit: int) -> list[int]:
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Entrypoint cho `fetch_tiki_products.py`: đọc input rồi chạy một output file."""
     product_ids = load_product_ids(args.input, args.limit)
     await run_product_ids(product_ids, args)
 
 
 async def run_product_ids(product_ids: list[int], args: argparse.Namespace) -> None:
-    """Fetch all due product IDs for a single output file."""
+    """
+    Crawl các ID đến hạn trong một output file.
+
+    Hàm này không chia batch. Nó chỉ xử lý danh sách ID được truyền vào, thường
+    là một batch 1000 ID từ `main.py`.
+    """
     run_start_time = time.time()
     store = ResultStore(args.output)
     counters = {"success": 0, "failed_temp": 0, "failed_perm": 0}
@@ -105,7 +120,12 @@ async def _run_worker_queue(
     counters: dict[str, int],
     args: argparse.Namespace,
 ) -> None:
-    """Run concurrent workers against the shared ID queue."""
+    """
+    Tạo queue chung và chạy nhiều async worker.
+
+    Queue giúp mỗi product_id chỉ được một worker nhận trong cùng một lượt chạy.
+    `NaturalPacer` vẫn dùng chung để tránh tất cả worker bắn request cùng lúc.
+    """
     timeout = aiohttp.ClientTimeout(total=args.timeout)
     connector = aiohttp.TCPConnector(
         limit=args.concurrency,
@@ -149,7 +169,12 @@ async def _worker(
     store: ResultStore,
     counters: dict[str, int],
 ) -> None:
-    """Fetch IDs until the queue is empty or a global stop signal appears."""
+    """
+    Worker xử lý từng ID từ queue.
+
+    Mỗi worker được gán một API base URL cố định. Nếu truyền 10 Worker URL và
+    `--concurrency 10`, mỗi worker sẽ dùng một Cloudflare Worker riêng.
+    """
     tag = f"[Worker {worker_id}]"
     api_base_url = api_base_urls[(worker_id - 1) % len(api_base_urls)]
     while not stop_event.is_set():
@@ -196,6 +221,7 @@ async def _worker(
 
 
 def _quota_message(tag: str) -> str:
+    """Tạo thông báo rõ ràng khi Cloudflare Worker chạm quota/rate-limit."""
     return (
         f"\n🛑 ====================================================================\n"
         f"🛑 [THÔNG BÁO] ĐÃ CHẠM HẠN MỨC 100,000 REQUESTS/NGÀY CỦA CLOUDFLARE!\n"

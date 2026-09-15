@@ -1,4 +1,11 @@
-"""HTTP client logic for Tiki product-detail API responses."""
+"""HTTP client logic cho Tiki product-detail API.
+
+Module này chỉ làm việc với một request sản phẩm:
+- gọi endpoint product-detail;
+- nhận diện response JSON hợp lệ;
+- phân loại lỗi 404, retryable HTTP, HTML WAF challenge, Cloudflare quota;
+- chuẩn hóa product field thông qua `cleaner.extract_product_fields`.
+"""
 
 import asyncio
 import json
@@ -16,7 +23,7 @@ REQUIRED_PRODUCT_FIELDS = {"id", "name", "price"}
 
 
 def parse_retry_after(header_value: Optional[str]) -> Optional[int]:
-    """Parse Retry-After as seconds or HTTP-date."""
+    """Đọc header Retry-After dạng số giây hoặc HTTP-date."""
     if not header_value:
         return None
     try:
@@ -32,7 +39,7 @@ def parse_retry_after(header_value: Optional[str]) -> Optional[int]:
 
 
 def is_cloudflare_quota_response(status: int, body: str, api_base_url: str) -> bool:
-    """Detect Cloudflare Worker quota/rate-limit pages."""
+    """Nhận diện lỗi quota/rate-limit trả bởi Cloudflare Worker."""
     body_lower = body.lower()
     quota_signal = (
         status in {429, 530, 1015, 1027}
@@ -55,7 +62,12 @@ async def fetch_product(
     product_id: int,
     api_base_url: str = TIKI_API_BASE_URL,
 ) -> FetchResult:
-    """Fetch and normalize one Tiki product detail payload."""
+    """
+    Gọi API cho một product_id và trả về `FetchResult`.
+
+    Hàm này không tự retry. Nó chỉ phân loại kết quả để `product_runner`
+    quyết định lưu success, ghi failed permanent, hay đưa ID vào retry queue.
+    """
     await pacer.wait()
     url = f"{api_base_url.rstrip('/')}/{product_id}"
     try:

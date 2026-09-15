@@ -1,4 +1,9 @@
-"""Load browser session and Cloudflare Worker endpoint configuration."""
+"""Load browser session and Cloudflare Worker endpoint configuration.
+
+Selenium chỉ dùng để capture cookie/user-agent một lần. Crawler chính đọc file
+session này và gắn vào request `aiohttp`. Worker URL cũng được đọc tại đây để
+`product_runner` phân bổ endpoint cho từng async worker.
+"""
 
 import json
 from pathlib import Path
@@ -71,7 +76,12 @@ def load_browser_session(cookie_file: Optional[Path]) -> tuple[dict[str, str], i
 
 
 def build_session_headers(is_worker_mode: bool, cookie_file: Optional[Path]) -> tuple[dict[str, str], int]:
-    """Build aiohttp headers for either direct Tiki API or Worker proxy mode."""
+    """
+    Tạo header cho aiohttp session.
+
+    Worker mode dùng header gọn hơn vì request đi qua proxy. Direct mode giữ
+    bộ header browser-like đầy đủ từ `config.DEFAULT_HEADERS`.
+    """
     if is_worker_mode:
         headers = {
             "Accept": "application/json, text/plain, */*",

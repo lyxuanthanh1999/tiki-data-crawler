@@ -1,4 +1,12 @@
-"""Durable output, progress, retry, and stats storage."""
+"""Durable output, progress, retry, and stats storage.
+
+Module này là nền tảng resume. Mỗi output batch có một bộ file đi kèm:
+- `.jsonl` để append từng product ngay khi thành công;
+- `.progress.txt` để biết ID nào đã lưu;
+- `.retry.json` để giữ ID lỗi tạm thời và cooldown WAF;
+- `.failed_permanent.json` cho lỗi terminal như 404;
+- `.stats.json` cho thời gian chạy tích lũy.
+"""
 
 import asyncio
 import json
@@ -100,6 +108,7 @@ class ResultStore:
         temp_file.replace(path)
 
     def update_stats(self, last_run_duration: float) -> dict[str, Any]:
+        """Cộng dồn thời gian chạy vào `.stats.json` sau mỗi lượt crawl batch."""
         previous_stats = self._load_json_dict(self.stats_file)
         previous_total = float(previous_stats.get("total_time_seconds", 0) or 0)
         total_time = previous_total + max(0, last_run_duration)
@@ -190,6 +199,14 @@ class ResultStore:
         attempts: int,
         server_retry_after: Optional[int],
     ) -> tuple[int, Optional[float]]:
+        """
+        Tính lần retry tiếp theo.
+
+        - Lỗi terminal: không retry.
+        - WAF/challenge: dùng backoff toàn cục.
+        - HTTP retryable có Retry-After: ưu tiên header server.
+        - Retryable thường: dùng chuỗi 5p, 15p, 30p, 1h.
+        """
         if not retryable:
             return 0, None
         if stop_all:
@@ -227,4 +244,5 @@ class ResultStore:
 
     @property
     def permanently_failed_count(self) -> int:
+        """Số ID terminal đã ghi vào `.failed_permanent.json`."""
         return len(self.failed_permanent)

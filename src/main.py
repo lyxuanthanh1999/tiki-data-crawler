@@ -1,4 +1,14 @@
-"""Batch orchestrator for the Selenium Worker Hybrid crawler."""
+"""Batch orchestrator cho nhánh Selenium Worker Hybrid.
+
+File này chỉ điều phối cấp batch:
+- đọc input product_id;
+- chia mỗi batch khoảng 1000 ID;
+- gọi `product_runner.run_product_ids()` để crawl từng batch;
+- chờ cooldown WAF rồi resume batch đang dang dở.
+
+Logic HTTP, lưu output, retry queue được tách sang module riêng để `main.py`
+không ôm quá nhiều trách nhiệm.
+"""
 
 import argparse
 import asyncio
@@ -97,6 +107,7 @@ def wait_for_cooldown(
 
 
 def parse_args() -> argparse.Namespace:
+    """Khai báo CLI cho lệnh chạy `src/main.py` hoặc daemon runner."""
     parser = argparse.ArgumentParser(description="Tiki Product Crawler - Batch Orchestrator")
     parser.add_argument("--input", type=str, default="", help="File product_id input")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
@@ -153,7 +164,15 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
 
 
 def resolve_input_path(args: argparse.Namespace) -> Path:
-    """Resolve explicit input, default product_ids.txt, or a generated sample file."""
+    """
+    Chọn file input product_id.
+
+    Ưu tiên:
+    1. `--input` nếu người dùng truyền rõ.
+    2. `data/input/product_ids.txt` nếu tồn tại.
+    3. File đầu tiên trong `data/input`.
+    4. Tạo sample nếu có `--generate-sample`.
+    """
     if args.input:
         return Path(args.input)
 
@@ -195,7 +214,7 @@ def load_run_ids(args: argparse.Namespace) -> tuple[Path, list[int]]:
 
 
 def prepare_batches(args: argparse.Namespace, product_ids: list[int]) -> tuple[Path, list[list[int]], int, int]:
-    """Create output directory and calculate selected batch range."""
+    """Tạo output dir và tính range batch cần chạy theo `--start-batch/--end-batch`."""
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     batches = chunk_ids(product_ids, args.batch_size)
@@ -205,7 +224,12 @@ def prepare_batches(args: argparse.Namespace, product_ids: list[int]) -> tuple[P
 
 
 def seed_existing_output(args: argparse.Namespace, product_ids: list[int], output_dir: Path) -> bool:
-    """Seed old consolidated output into part files. Return True when seed-only should stop."""
+    """
+    Import output cũ vào cấu trúc parts hiện tại.
+
+    Dùng khi trước đó đã crawl ra một file tổng, sau này muốn chuyển sang
+    output theo batch mà không crawl lại ID đã có.
+    """
     if args.no_seed_existing:
         return False
     summary = asyncio.run(
@@ -229,7 +253,7 @@ def seed_existing_output(args: argparse.Namespace, product_ids: list[int], outpu
 
 
 def run_batches(args: argparse.Namespace, batches: list[list[int]], output_dir: Path, start_batch: int, end_batch: int) -> None:
-    """Run selected batches in order, staying on the current batch until it finishes."""
+    """Chạy các batch theo thứ tự; batch hiện tại phải xong mới chuyển batch kế tiếp."""
     total_batches = len(batches)
     logger.info(
         "Bắt đầu batch crawl: tổng %s batch, chạy batch %s-%s, batch_size=%s, concurrency=%s, delay=%.1f-%.1fs",
@@ -254,7 +278,12 @@ def run_one_batch_until_done(
     index: int,
     total_batches: int,
 ) -> bool:
-    """Run or wait one batch until complete. Return False when the pipeline must stop."""
+    """
+    Xử lý một batch tới khi hoàn tất.
+
+    Nếu gặp WAF/cooldown, hàm này giữ nguyên batch hiện tại, chờ rồi chạy tiếp.
+    Trả False khi cần dừng toàn pipeline.
+    """
     output_file = batch_output_path(output_dir, index)
     while True:
         store = ResultStore(output_file)
@@ -310,7 +339,7 @@ def handle_cooldown(
 
 
 def run_batch_fetch(args: argparse.Namespace, batch: list[int], output_file: Path, index: int) -> None:
-    """Call the async product runner for one batch and recover transient exceptions."""
+    """Đóng gói args rồi gọi async runner cho đúng một batch output."""
     batch_args = SimpleNamespace(
         output=output_file,
         concurrency=args.concurrency,
@@ -332,6 +361,7 @@ def run_batch_fetch(args: argparse.Namespace, batch: list[int], output_file: Pat
 
 
 def log_batch_status(index: int, total_batches: int, status: dict[str, int], suffix: str = "") -> None:
+    """In log trạng thái batch theo format cố định để dễ tail/grep khi chạy lâu."""
     label = f" status {suffix}" if suffix else " status"
     logger.info(
         "Batch #%04d/%04d%s: total=%s, success=%s, permanent=%s, done=%s, due=%s, pending_retry=%s, cooldown=%ss",
