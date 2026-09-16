@@ -1,5 +1,6 @@
 # Environments
 venv/
+.venv/
 .env
 
 # Byte-compiled / optimized / DLL files
@@ -26,6 +27,9 @@ plans/
 logs/
 *.log
 *.pids
+data/input/auto_runs/
+data/output/selenium_worker_test/
+data/session/
 
 # Large consolidated output files (>100MB exceeds GitHub limits; rebuild via merge_parts.py)
 data/output/all_products.csv

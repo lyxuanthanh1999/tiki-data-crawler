@@ -1,0 +1,12 @@
+[project]
+name = "data-collection"
+version = "0.1.0"
+description = "Collect and normalize product data from Tiki Product Detail API"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "tqdm>=4.66.0",
+]
+
+[tool.uv]
+package = false
