@@ -28,15 +28,79 @@ Một batch gồm các file checkpoint:
 ## Cấu trúc chính
 
 ```text
-src/
-  main.py                 Điểm vào chạy theo batch.
-  cli.py                  Khai báo và kiểm tra command-line arguments.
-  batch_runner.py         Điều phối batch, retry, resume và WAF cooldown.
-  batch_storage.py        Đọc ID, chia batch, đọc và seed checkpoint.
-  cooldown.py             Chờ khi API trả về WAF/HTML challenge.
-  fetch_tiki_products.py  Engine asyncio/aiohttp gọi Product Detail API.
-  cleaner.py              Chuẩn hóa description và các trường sản phẩm.
-  config.py               Cấu hình API, header và giá trị mặc định.
+.
+├── pyproject.toml                    Cấu hình project và dependencies cho uv.
+├── uv.lock                           Khóa phiên bản dependencies cho uv.
+├── requirements.txt                  Dependencies cho pip.
+├── README.md                         Hướng dẫn cài đặt, chạy và kiểm tra.
+│
+├── src/
+│   ├── main.py                       Điểm vào chạy thu thập theo batch.
+│   ├── cli.py                        Khai báo và kiểm tra command-line arguments.
+│   ├── batch_runner.py               Điều phối batch, retry, resume và WAF cooldown.
+│   ├── batch_storage.py              Đọc ID, chia batch, summary và seed checkpoint.
+│   ├── cooldown.py                   Chờ khi API trả về WAF/HTML challenge.
+│   ├── fetch_tiki_products.py        Engine asyncio/aiohttp gọi Product Detail API.
+│   ├── cleaner.py                    Chuẩn hóa description và trường sản phẩm.
+│   ├── config.py                     Cấu hình API, header và giá trị mặc định.
+│   ├── crawler.py                    Crawler tương thích cho workflow cũ.
+│   └── __init__.py                   Khai báo Python package.
+│
+├── runners/
+│   ├── retry.sh                      Chạy retry generic từ file ID lỗi.
+│   ├── stop_retry.sh                 Dừng retry runner.
+│   ├── phase1/
+│   │   ├── run.sh                    Chạy phase thu thập chính.
+│   │   ├── start.command             Lệnh khởi động phase 1.
+│   │   └── stop.sh                   Dừng phase 1.
+│   ├── phase2/
+│   │   ├── run.sh                    Chạy retry phase 2.
+│   │   ├── start.command             Lệnh khởi động phase 2.
+│   │   └── stop.sh                   Dừng phase 2.
+│   ├── phase3/
+│   │   ├── run.sh                    Chạy retry phase 3.
+│   │   ├── start.command             Lệnh khởi động phase 3.
+│   │   └── stop.sh                   Dừng phase 3.
+│   └── phase4/
+│       ├── run.sh                    Chạy retry phase 4.
+│       ├── start.command             Lệnh khởi động phase 4.
+│       └── stop.sh                   Dừng phase 4.
+│
+├── monitor/
+│   ├── check_status.py               Theo dõi trạng thái output concurrency.
+│   ├── check_retry.py                Theo dõi generic retry runner.
+│   ├── check_retry_status.py         Theo dõi retry phase 2.
+│   ├── check_retry_pass1_status.py   Theo dõi retry phase 1.
+│   ├── check_retry_pass2_status.py   Theo dõi retry phase 2.
+│   ├── check_retry_pass3_status.py   Theo dõi retry phase 3.
+│   ├── check_retry_pass4_status.py   Theo dõi retry phase 4.
+│   └── summary.py                    Tổng hợp trạng thái các output.
+│
+├── tools/
+│   ├── extract_failed_ids.py         Tạo input lỗi cho phase 2.
+│   ├── extract_failed_ids_pass3.py   Tạo input lỗi cho phase 3.
+│   └── merge_parts.py                Gộp các output parts thành dữ liệu tổng hợp.
+│
+├── tests/
+│   ├── test_fetch_tiki_products.py   Test engine gọi API và checkpoint.
+│   ├── test_main_batching.py         Test chia batch, seed và trạng thái.
+│   └── test_crawler.py               Test crawler tương thích cũ.
+│
+└── data/
+    ├── checkpoint.json               Checkpoint của crawler tương thích cũ.
+    ├── input/                        File product ID và danh sách retry.
+    │   ├── product_ids.txt           Input chính, số lượng không giới hạn.
+    │   ├── product_ids_10.txt        Input test nhỏ.
+    │   ├── product_ids_part1.txt     Một phần input tùy chọn.
+    │   ├── product_ids_part2.txt     Một phần input tùy chọn.
+    │   ├── sample_product_ids.txt    Input mẫu.
+    │   └── failed_ids_pass*.txt      Danh sách ID lỗi cho retry.
+    └── output/
+        └── concurrency/
+            ├── products_output.*     Checkpoint output engine trực tiếp.
+            └── parts/
+                └── products_part_*.{json,jsonl,...}
+                                      Output và checkpoint theo batch.
 ```
 
 ## Luồng hệ thống

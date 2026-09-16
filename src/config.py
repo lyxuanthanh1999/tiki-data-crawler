@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 
 # Base directories
-BASE_DIR = Path(__file__).resolve().parent
+# config.py nằm trong src/; dữ liệu runtime nằm ở data/ tại project root.
+BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 OUTPUT_DIR = DATA_DIR / "output"
 INPUT_DIR = DATA_DIR / "input"
